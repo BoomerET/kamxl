@@ -32,10 +32,13 @@ Homepage = "https://github.com/BoomerET/kamxl"
 Repository = "https://github.com/BoomerET/kamxl"
 Issues = "https://github.com/BoomerET/kamxl/issues"
 
-# Flat layout: kamxl.py and packet.py live at the repo root, alongside the
-# live-hardware test scripts (*Test.py) and the offline tests/ suite. Only
-# the two importable modules are packaged -- everything else is left out of
-# the distribution deliberately, since the *Test.py scripts need a real
-# KAM-XL on a serial port and aren't meant to ship.
+[project.scripts]
+kamxl-daemon = "kamxl_daemon:main"
+
+# Flat layout: kamxl.py, packet.py, and kamxl_daemon.py live at the repo
+# root, alongside the live-hardware test scripts (*Test.py) and the offline
+# tests/ suite. Only the three importable modules are packaged -- everything
+# else is left out of the distribution deliberately, since the *Test.py
+# scripts need a real KAM-XL on a serial port and aren't meant to ship.
 [tool.setuptools]
-py-modules = ["kamxl", "packet"]
+py-modules = ["kamxl", "packet", "kamxl_daemon"]

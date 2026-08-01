@@ -64,6 +64,8 @@ more).
   reference
 - [docs/troubleshooting.md](docs/troubleshooting.md) -- real hardware
   quirks and how this library works around them
+- [docs/daemon.md](docs/daemon.md) -- the background daemon: protocol,
+  methods, concurrency model
 - [examples/](examples/) -- runnable scripts, including two that need
   no hardware at all
 

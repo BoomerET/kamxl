@@ -54,6 +54,9 @@ class ScriptedSerial:
         self.written = []
         self._out = bytearray()
 
+    def close(self):
+        self.is_open = False
+
     def write(self, data):
         self.written.append(data)
 
@@ -109,6 +112,9 @@ class SilentSerial:
         self.is_open = True
         self.written = []
 
+    def close(self):
+        self.is_open = False
+
     def write(self, data):
         self.written.append(data)
         return len(data)
@@ -151,6 +157,9 @@ class CannedSerial:
             for chunk in chunks
         ]
 
+    def close(self):
+        self.is_open = False
+
     def write(self, data):
         self.written.append(data)
         return len(data)
@@ -191,6 +200,9 @@ class ChunkSerial:
             chunk.encode("ascii") if isinstance(chunk, str) else chunk
             for chunk in chunks
         ]
+
+    def close(self):
+        self.is_open = False
 
     @property
     def in_waiting(self):

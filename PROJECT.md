@@ -8,10 +8,22 @@ foundation -- Milestone 1 here. Direction as of now:
 
 1. **Python library** -- done (this file's original scope, below).
 2. **Background daemon** that owns the serial connection to the
-   KAM-XL and manages it. Necessary because only one process can
-   hold a serial port at a time -- the daemon becomes the single
-   owner, and everything after this point talks to *it*, not
-   directly to COM8.
+   KAM-XL and manages it -- done. `kamxl_daemon.py`: newline-delimited
+   JSON over a Unix domain socket, one lock serializing all KAMXL
+   access (including a background monitor-broadcast thread, polled in
+   short bursts so it doesn't starve ordinary commands), pub/sub
+   `monitor.subscribe`/`unsubscribe` for live `Packet` events to any
+   number of connected clients. See
+   [docs/daemon.md](docs/daemon.md) for the protocol and a documented
+   known limitation (monitor traffic and command responses still
+   share one physical serial stream on real hardware -- no amount of
+   client-side locking changes that). Covered by
+   `tests/test_daemon.py`, a real socket/threading integration test
+   against the same scripted fakes used elsewhere -- not yet run
+   against a real KAM-XL end-to-end (no hardware available in the
+   sandbox this was built in); worth a hardware smoke test before
+   relying on it. Single KAM-XL / serial port per daemon instance;
+   multi-device support isn't in scope yet.
 3. **REST API** exposing the daemon's capabilities over HTTP.
 4. **Web terminal** -- browser-based Terminal Mode session.
 5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
