@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kamxl"
+version = "0.1.0"
+description = "A Pythonic API for the Kantronics KAM-XL packet TNC's Terminal Mode"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Dave Berkompas", email = "david.berkompas@gmail.com" },
+]
+requires-python = ">=3.8"
+dependencies = [
+    "pyserial>=3.5",
+]
+keywords = ["ham radio", "amateur radio", "packet radio", "ax.25", "kantronics", "kam-xl", "tnc"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Communications :: Ham Radio",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/BoomerET/kamxl"
+Repository = "https://github.com/BoomerET/kamxl"
+Issues = "https://github.com/BoomerET/kamxl/issues"
+
+# Flat layout: kamxl.py and packet.py live at the repo root, alongside the
+# live-hardware test scripts (*Test.py) and the offline tests/ suite. Only
+# the two importable modules are packaged -- everything else is left out of
+# the distribution deliberately, since the *Test.py scripts need a real
+# KAM-XL on a serial port and aren't meant to ship.
+[tool.setuptools]
+py-modules = ["kamxl", "packet"]

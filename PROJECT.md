@@ -128,7 +128,19 @@ Implemented and working:
    network access in the sandbox this was built in) -- the offline
    test suite is still what actually proves behavior; re-ran it
    after adding hints and confirmed nothing regressed.
-8. Package for PyPI
+8. Package for PyPI -- scaffolding done. `pyproject.toml` added
+   (PEP 621 metadata, flat layout via `py-modules = ["kamxl",
+   "packet"]` so the existing `from kamxl import KAMXL` imports used
+   by every `*Test.py` script keep working unchanged). Verified with
+   `pip install --no-build-isolation -e .` that `kamxl` and `packet`
+   import correctly from outside the repo. Not yet published --
+   that needs a PyPI account/API token, and this sandbox has no
+   network access to PyPI to do a full `python -m build` dry run
+   (only got as far as confirming the TOML parses and the modules
+   install/import correctly under local setuptools 59.6, which
+   predates PEP 621 support -- worth a real `pip install build &&
+   python -m build` check on a machine with a current toolchain
+   before actually publishing).
 9. Write documentation
 10. Build examples
 

@@ -20,6 +20,20 @@ for packet in kam.monitor():
 This is not a Winlink client -- it's meant to be the general-purpose
 layer underneath one (or a BBS, a chat tool, an APRS decoder, ...).
 
+## Installation
+
+Not yet published to PyPI (see [PROJECT.md](PROJECT.md)). For now, install
+from a local clone:
+
+```
+git clone git@github.com:BoomerET/kamxl.git
+cd kamxl
+pip install -e .
+```
+
+Requires Python 3.8+ and [pyserial](https://pypi.org/project/pyserial/),
+which `pip install -e .` pulls in automatically.
+
 ## Status
 
 Actively developed and tested against real hardware (Kantronics
