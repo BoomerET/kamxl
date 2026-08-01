@@ -3,8 +3,9 @@ import serial
 import time
 
 from dataclasses import dataclass
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
-from packet import PacketParser
+from packet import Packet, PacketParser
 
 
 # ---------------------------------------------------------------------------
@@ -19,10 +20,10 @@ class CommandInfo:
     # DIGIPEAT's ("ON", "UIONLY", "OFF") or FULLDUP's ("ON", "OFF",
     # "LOOPBACK"). Left as None when every value is legal (or validation
     # isn't practical, e.g. free-form strings).
-    choices: tuple = None
+    choices: Optional[Tuple[str, ...]] = None
 
 
-COMMANDS = {
+COMMANDS: Dict[str, CommandInfo] = {
     "MONITOR": CommandInfo("multiport_bool"),
     # DIGIPEAT is a *single* value (not Multi-Port per the manual), with
     # three legal states rather than a simple ON/OFF.
@@ -76,7 +77,7 @@ class KAMConnectionError(KAMError):
 # ---------------------------------------------------------------------------
 
 class KAMXL:
-    PROMPT = b"cmd:"
+    PROMPT: bytes = b"cmd:"
 
     # Markers used while attempting an AX.25 CONNECT.
     #
@@ -90,7 +91,7 @@ class KAMXL:
     #
     # The busy message is "***(callsign) busy" -- the callsign sits
     # between "***" and "busy", so it can't be matched as a fixed string.
-    CONNECT_MARKERS = {
+    CONNECT_MARKERS: Dict[str, Union[bytes, re.Pattern]] = {
         "connected": re.compile(
             rb"\*\*\*\s*connected\s+to",
             re.IGNORECASE
@@ -111,7 +112,7 @@ class KAMXL:
     }
 
     # Markers used while waiting for a DISCONNECT to complete.
-    DISCONNECT_MARKERS = {
+    DISCONNECT_MARKERS: Dict[str, Union[bytes, re.Pattern]] = {
         "disconnected": re.compile(
             rb"\*\*\*\s*disconnected",
             re.IGNORECASE
@@ -124,20 +125,20 @@ class KAMXL:
 
     def __init__(
         self,
-        port,
-        baudrate=19200,
-        timeout=0.25
-    ):
-        self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
-        self.serial = None
+        port: str,
+        baudrate: int = 19200,
+        timeout: float = 0.25
+    ) -> None:
+        self.port: str = port
+        self.baudrate: int = baudrate
+        self.timeout: float = timeout
+        self.serial: Optional[serial.Serial] = None
 
     # -----------------------------------------------------------------------
     # Serial connection
     # -----------------------------------------------------------------------
 
-    def connect(self):
+    def connect(self) -> None:
         """
         Open the serial connection to the KAM-XL.
         """
@@ -155,7 +156,7 @@ class KAMXL:
 
         time.sleep(0.1)
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """
         Close the serial connection to the KAM-XL.
         """
@@ -163,17 +164,17 @@ class KAMXL:
             self.serial.close()
 
     @property
-    def is_connected(self):
+    def is_connected(self) -> bool:
         return bool(
             self.serial
             and self.serial.is_open
         )
 
-    def _require_connection(self):
+    def _require_connection(self) -> None:
         if not self.is_connected:
             raise KAMError("KAM-XL is not connected")
 
-    def _drain_input(self):
+    def _drain_input(self) -> None:
         """
         Discard anything sitting in the receive buffer, including
         bytes still in flight.
@@ -188,7 +189,7 @@ class KAMXL:
         time.sleep(0.05)
         self.serial.reset_input_buffer()
 
-    def _strip_leading_prompt(self, text):
+    def _strip_leading_prompt(self, text: str) -> str:
         """
         Remove a stray leading "cmd:" prompt glued to the front of a
         read, left over from a race with _drain_input(). It carries
@@ -206,7 +207,7 @@ class KAMXL:
     # Low-level serial reading
     # -----------------------------------------------------------------------
 
-    def _read_until_prompt(self, timeout=10):
+    def _read_until_prompt(self, timeout: float = 10) -> bytes:
         """
         Read until the KAM-XL command prompt is received.
         """
@@ -232,11 +233,11 @@ class KAMXL:
 
     def _read_until_any(
         self,
-        markers,
-        timeout=30,
-        require_line_end=False,
-        line_end_grace=0.5
-    ):
+        markers: Dict[str, Union[bytes, re.Pattern]],
+        timeout: float = 30,
+        require_line_end: bool = False,
+        line_end_grace: float = 0.5
+    ) -> Tuple[str, Optional[str]]:
         """
         Read until one of the supplied markers is received.
 
@@ -269,7 +270,7 @@ class KAMXL:
 
         data = bytearray()
         deadline = time.monotonic() + timeout
-        matched_name = None
+        matched_name: Optional[str] = None
 
         while time.monotonic() < deadline:
             chunk = self.serial.read(
@@ -309,7 +310,7 @@ class KAMXL:
             matched_name
         )
 
-    def read_available(self):
+    def read_available(self) -> str:
         """
         Return any bytes currently waiting from the KAM-XL.
 
@@ -329,7 +330,11 @@ class KAMXL:
             errors="replace"
         )
 
-    def listen(self, seconds=60, callback=None):
+    def listen(
+        self,
+        seconds: float = 60,
+        callback: Optional[Callable[[str], None]] = None
+    ) -> str:
         """
         Listen to unsolicited KAM-XL output for a period of time.
 
@@ -340,7 +345,7 @@ class KAMXL:
         self._require_connection()
 
         deadline = time.monotonic() + seconds
-        received = []
+        received: List[str] = []
 
         while time.monotonic() < deadline:
             text = self.read_available()
@@ -355,7 +360,11 @@ class KAMXL:
 
         return "".join(received)
 
-    def monitor(self, seconds=None, callback=None):
+    def monitor(
+        self,
+        seconds: Optional[float] = None,
+        callback: Optional[Callable[[Packet], None]] = None
+    ) -> Optional[Iterator[Packet]]:
         """
         Monitor unsolicited KAM-XL traffic, decoded into Packet
         objects instead of raw text.
@@ -387,13 +396,13 @@ class KAMXL:
 
         parser = PacketParser()
 
-        deadline = (
+        deadline: Optional[float] = (
             None
             if seconds is None
             else time.monotonic() + seconds
         )
 
-        def packets():
+        def packets() -> Iterator[Packet]:
             while (
                 deadline is None
                 or time.monotonic() < deadline
@@ -415,11 +424,13 @@ class KAMXL:
         for packet in packets():
             callback(packet)
 
+        return None
+
     # -----------------------------------------------------------------------
     # Terminal command handling
     # -----------------------------------------------------------------------
 
-    def _remove_command_echo(self, text, command):
+    def _remove_command_echo(self, text: str, command: str) -> str:
         """
         Remove the first line if it is simply the KAM echoing the command.
 
@@ -438,9 +449,9 @@ class KAMXL:
 
     def send_command(
         self,
-        command,
-        command_timeout=10
-    ):
+        command: str,
+        command_timeout: float = 10
+    ) -> str:
         """
         Send a Terminal Mode command and wait for cmd:.
 
@@ -492,7 +503,7 @@ class KAMXL:
     # Generic get/set
     # -----------------------------------------------------------------------
 
-    def get(self, command):
+    def get(self, command: str) -> str:
         """
         Query a KAM-XL parameter and return its raw value.
         """
@@ -519,7 +530,7 @@ class KAMXL:
 
         return ""
 
-    def set(self, command, value):
+    def set(self, command: str, value: Any) -> str:
         """
         Set a raw KAM-XL parameter value.
         """
@@ -533,7 +544,7 @@ class KAMXL:
     # DISPLAY / configuration
     # -----------------------------------------------------------------------
 
-    def get_configuration(self):
+    def get_configuration(self) -> Dict[str, str]:
         """
         Return the common one-line DISPLAY settings as a dictionary.
 
@@ -546,7 +557,7 @@ class KAMXL:
             command_timeout=20
         )
 
-        config = {}
+        config: Dict[str, str] = {}
 
         for line in response.splitlines():
             line = line.strip()
@@ -571,7 +582,7 @@ class KAMXL:
     # Default radio port
     # -----------------------------------------------------------------------
 
-    def get_default_port(self):
+    def get_default_port(self) -> int:
         """
         Return the configured default radio port.
 
@@ -583,7 +594,7 @@ class KAMXL:
             self.get("PORT")
         )
 
-    def set_default_port(self, port):
+    def set_default_port(self, port: int) -> int:
         """
         Change the KAM-XL default radio port setting.
         """
@@ -612,7 +623,7 @@ class KAMXL:
     # -----------------------------------------------------------------------
 
     @staticmethod
-    def _parse_on_off(value):
+    def _parse_on_off(value: str) -> bool:
         value = value.strip().upper()
 
         if value == "ON":
@@ -626,7 +637,7 @@ class KAMXL:
         )
 
     @staticmethod
-    def _format_on_off(value):
+    def _format_on_off(value: bool) -> str:
         if not isinstance(value, bool):
             raise TypeError(
                 "Value must be True or False"
@@ -634,12 +645,12 @@ class KAMXL:
 
         return "ON" if value else "OFF"
 
-    def get_bool(self, command):
+    def get_bool(self, command: str) -> bool:
         return self._parse_on_off(
             self.get(command)
         )
 
-    def set_bool(self, command, value):
+    def set_bool(self, command: str, value: bool) -> str:
         return self.set(
             command,
             self._format_on_off(value)
@@ -649,13 +660,18 @@ class KAMXL:
     # Restricted-choice parameters (e.g. DIGIPEAT: ON/UIONLY/OFF)
     # -----------------------------------------------------------------------
 
-    def get_choice(self, command):
+    def get_choice(self, command: str) -> str:
         """
         Query a single-value, restricted-choice parameter.
         """
         return self.get(command).strip().upper()
 
-    def set_choice(self, command, value, choices=None):
+    def set_choice(
+        self,
+        command: str,
+        value: Any,
+        choices: Optional[Tuple[str, ...]] = None
+    ) -> str:
         """
         Set a single-value, restricted-choice parameter.
 
@@ -677,7 +693,7 @@ class KAMXL:
     # Multi-port parameters
     # -----------------------------------------------------------------------
 
-    def get_multiport(self, command):
+    def get_multiport(self, command: str) -> Tuple[str, str]:
         """
         Return a two-port value as:
 
@@ -701,7 +717,7 @@ class KAMXL:
             parts[1].strip()
         )
 
-    def get_multiport_bool(self, command):
+    def get_multiport_bool(self, command: str) -> Tuple[bool, bool]:
         port1, port2 = self.get_multiport(
             command
         )
@@ -713,10 +729,10 @@ class KAMXL:
 
     def set_multiport_bool(
         self,
-        command,
-        port,
-        value
-    ):
+        command: str,
+        port: int,
+        value: bool
+    ) -> Tuple[bool, bool]:
         """
         Change a boolean setting for only one radio port.
 
@@ -751,7 +767,7 @@ class KAMXL:
             command
         )
 
-    def get_multiport_choice(self, command):
+    def get_multiport_choice(self, command: str) -> Tuple[str, str]:
         """
         Return a two-port restricted-choice value as:
 
@@ -771,11 +787,11 @@ class KAMXL:
 
     def set_multiport_choice(
         self,
-        command,
-        port,
-        value,
-        choices=None
-    ):
+        command: str,
+        port: int,
+        value: Any,
+        choices: Optional[Tuple[str, ...]] = None
+    ) -> Tuple[str, str]:
         """
         Change a restricted-choice setting for only one radio port.
 
@@ -812,7 +828,7 @@ class KAMXL:
     # Typed parameters
     # -----------------------------------------------------------------------
 
-    def get_typed(self, command):
+    def get_typed(self, command: str) -> Any:
         """
         Query a known KAM-XL parameter and convert it into an appropriate
         Python type.
@@ -865,7 +881,7 @@ class KAMXL:
 
         return self.get(command)
 
-    def set_typed(self, command, value):
+    def set_typed(self, command: str, value: Any) -> Any:
         """
         Set a known parameter using normal Python values.
 
@@ -1037,10 +1053,10 @@ class KAMXL:
 
     def connect_station(
         self,
-        callsign,
-        via=None,
-        timeout=60
-    ):
+        callsign: str,
+        via: Optional[Union[str, List[str]]] = None,
+        timeout: float = 60
+    ) -> str:
         """
         Attempt an AX.25 connected-mode connection.
 
@@ -1108,9 +1124,9 @@ class KAMXL:
 
     def send_connected(
         self,
-        text,
-        add_cr=True
-    ):
+        text: Any,
+        add_cr: bool = True
+    ) -> None:
         """
         Send text while the KAM-XL is in Convers mode.
         """
@@ -1126,8 +1142,8 @@ class KAMXL:
 
     def read_connected(
         self,
-        timeout=5
-    ):
+        timeout: float = 5
+    ) -> str:
         """
         Collect connected-mode data for up to timeout seconds.
         """
@@ -1151,8 +1167,8 @@ class KAMXL:
 
     def enter_command_mode(
         self,
-        timeout=5
-    ):
+        timeout: float = 5
+    ) -> str:
         """
         Send Ctrl-C to return from Convers mode to Command mode.
         """
@@ -1179,8 +1195,8 @@ class KAMXL:
 
     def disconnect_station(
         self,
-        timeout=30
-    ):
+        timeout: float = 30
+    ) -> str:
         """
         Return to Command mode and disconnect the current AX.25 link.
         """

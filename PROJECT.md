@@ -98,7 +98,13 @@ Implemented and working:
    they can't silently come back. Still no substitute for real
    hardware testing per the design philosophy above -- this is a
    safety net for regressions, not a replacement.
-7. Add type hints throughout
+7. ~~Add type hints throughout~~ -- done for `kamxl.py` and
+   `packet.py`. Uses the `typing` module (`Optional`, `Union`, etc.)
+   rather than newer `X | None` syntax, for broader Python version
+   compatibility. No `mypy` available to statically verify (no
+   network access in the sandbox this was built in) -- the offline
+   test suite is still what actually proves behavior; re-ran it
+   after adding hints and confirmed nothing regressed.
 8. Package for PyPI
 9. Write documentation
 10. Build examples

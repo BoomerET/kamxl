@@ -1,6 +1,7 @@
 import re
 
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # Matches a KAM-XL MONITOR header line, e.g.:
@@ -16,7 +17,7 @@ from dataclasses import dataclass
 # "*". This is scoped to MONITOR/unsolicited traffic only -- plain
 # Convers-mode session text (e.g. a Winlink handshake or a node chat
 # session) never matches this shape and is intentionally left alone.
-HEADER_RE = re.compile(
+HEADER_RE: re.Pattern = re.compile(
     r"^(?P<source>[A-Za-z0-9\-]+)"
     r">(?P<destination>[A-Za-z0-9\-]+)"
     r"(?:,(?P<digipeaters>[A-Za-z0-9\-\*,]+))?"
@@ -42,13 +43,13 @@ class Packet:
 
     source: str
     destination: str
-    digipeaters: tuple
+    digipeaters: Tuple[str, ...]
     port: int
     payload: str
     raw: str
 
     @property
-    def digipeated(self):
+    def digipeated(self) -> bool:
         """
         True if at least one digipeater in the path has already
         repeated this packet.
@@ -89,11 +90,11 @@ class PacketParser:
             handle(packet)
     """
 
-    def __init__(self):
-        self._buffer = ""
-        self._pending = None
+    def __init__(self) -> None:
+        self._buffer: str = ""
+        self._pending: Optional[Dict[str, Any]] = None
 
-    def feed(self, text):
+    def feed(self, text: str) -> List[Packet]:
         """
         Feed newly-received text into the parser.
 
@@ -103,7 +104,7 @@ class PacketParser:
         """
         self._buffer += text
 
-        completed = []
+        completed: List[Packet] = []
 
         while True:
             newline_index = self._buffer.find("\n")
@@ -123,7 +124,7 @@ class PacketParser:
 
         return completed
 
-    def flush(self):
+    def flush(self) -> List[Packet]:
         """
         Finalize whatever is still buffered -- e.g. because the
         session ended before a trailing newline or another header
@@ -132,7 +133,7 @@ class PacketParser:
         Returns a list of any Packet objects this produces (usually
         0 or 1).
         """
-        completed = []
+        completed: List[Packet] = []
 
         if self._buffer:
             line = self._buffer.rstrip("\r")
@@ -150,7 +151,7 @@ class PacketParser:
 
         return completed
 
-    def _process_line(self, line):
+    def _process_line(self, line: str) -> Optional[Packet]:
         """
         Handle one complete, decoded line.
 
@@ -188,7 +189,7 @@ class PacketParser:
 
         return completed
 
-    def _finalize_pending(self):
+    def _finalize_pending(self) -> Optional[Packet]:
         if self._pending is None:
             return None
 
