@@ -53,8 +53,19 @@ Implemented so far:
   structured `Packet` objects, callback- or generator-style
 
 See [PROJECT.md](PROJECT.md) for the full design philosophy, roadmap,
-and what's coming next (type hints, packaging, docs, examples, async
-support, APRS/Winlink/BBS helpers).
+and what's coming next (async support, APRS/Winlink/BBS helpers, and
+more).
+
+## Documentation
+
+- [docs/quickstart.md](docs/quickstart.md) -- connect, read/write
+  parameters, connected mode, monitoring
+- [docs/api_reference.md](docs/api_reference.md) -- full method/class
+  reference
+- [docs/troubleshooting.md](docs/troubleshooting.md) -- real hardware
+  quirks and how this library works around them
+- [examples/](examples/) -- runnable scripts, including two that need
+  no hardware at all
 
 ## Testing
 

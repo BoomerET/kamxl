@@ -141,8 +141,16 @@ Implemented and working:
    predates PEP 621 support -- worth a real `pip install build &&
    python -m build` check on a machine with a current toolchain
    before actually publishing).
-9. Write documentation
-10. Build examples
+9. ~~Write documentation~~ -- done. `docs/quickstart.md`,
+   `docs/api_reference.md`, and `docs/troubleshooting.md` (the last
+   consolidating the real-hardware quirks found so far: marker
+   casing, truncated VIA banners, the stale-prompt race, DIGIPEAT/
+   FULLDUP's non-obvious choice types, and MONITOR's sub-filters).
+10. ~~Build examples~~ -- done. `examples/`: two `offline_*.py`
+    scripts that need no hardware (packet parsing off canned text,
+    typed commands off the same scripted fake serial the test suite
+    uses) plus three `hardware_*.py` scripts mirroring the
+    root-level `*Test.py` pattern but trimmed for reading.
 
 ## Long-Term Vision
 
