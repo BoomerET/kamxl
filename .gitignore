@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+
+# Kantronics' own manual -- copyrighted third-party material, not
+# ours to redistribute in a public repo. Keep it locally for
+# reference during development.
+KAM-XL-Manual-RevE.pdf
+manual.txt
