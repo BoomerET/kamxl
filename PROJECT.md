@@ -1,5 +1,28 @@
 # KAM-XL Python Library — Project Overview
 
+## Roadmap (updated)
+
+The original milestone list below (Terminal Mode robustness, Convers
+Mode, packet parsing, monitoring, tests, type hints) is the
+foundation -- Milestone 1 here. Direction as of now:
+
+1. **Python library** -- done (this file's original scope, below).
+2. **Background daemon** that owns the serial connection to the
+   KAM-XL and manages it. Necessary because only one process can
+   hold a serial port at a time -- the daemon becomes the single
+   owner, and everything after this point talks to *it*, not
+   directly to COM8.
+3. **REST API** exposing the daemon's capabilities over HTTP.
+4. **Web terminal** -- browser-based Terminal Mode session.
+5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
+   in real time.
+6. **BBS with a modern web UI**.
+7. **APRS mapping and station database**.
+8. **Plugins for Wavelog, Winlink, and Home Assistant**.
+
+---
+
+
 ## Purpose
 
 Not another Winlink client. This is a Python library for controlling the
