@@ -88,7 +88,16 @@ Implemented and working:
 4. ~~Build a `Packet` dataclass~~ -- done. See `packet.py`.
 5. ~~Implement monitoring callbacks~~ -- done. `KAMXL.monitor()`
    supports both `callback=` and `for packet in kam.monitor():`.
-6. Increase test coverage
+6. ~~Increase test coverage~~ -- done for now. 39 offline unit tests
+   in `tests/` (standard-library `unittest`, no third-party packages
+   needed -- run with `python3 run_tests.py`), using a scripted fake
+   serial connection to exercise typed getters/setters, echo/`EH?`
+   handling, and connect/disconnect edge cases. Includes explicit
+   regression tests for the two real bugs found on hardware (stray
+   prompt leaking into banners, truncated VIA digipeat lines) so
+   they can't silently come back. Still no substitute for real
+   hardware testing per the design philosophy above -- this is a
+   safety net for regressions, not a replacement.
 7. Add type hints throughout
 8. Package for PyPI
 9. Write documentation

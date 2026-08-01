@@ -39,8 +39,21 @@ Implemented so far:
   structured `Packet` objects, callback- or generator-style
 
 See [PROJECT.md](PROJECT.md) for the full design philosophy, roadmap,
-and what's coming next (test coverage, type hints, packaging, docs,
-examples, async support, APRS/Winlink/BBS helpers).
+and what's coming next (type hints, packaging, docs, examples, async
+support, APRS/Winlink/BBS helpers).
+
+## Testing
+
+```
+python3 run_tests.py
+```
+
+Runs the offline unit test suite (standard-library `unittest`, no
+third-party packages required) against a scripted fake serial
+connection -- no KAM-XL hardware needed. Files ending in `Test.py`
+at the repo root (`listenTest.py`, `connectTest.py`, `chatTest.py`,
+etc.) are the live hardware test scripts actually used to validate
+this library against a real KAM-XL over the air.
 
 ## Design philosophy
 
