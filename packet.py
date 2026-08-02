@@ -4,14 +4,33 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
 
-# Matches a KAM-XL MONITOR header line, e.g.:
+# Matches a KAM-XL MONITOR header line. Format observed on real
+# hardware, with MCOM and MRESP at their factory defaults (both
+# ON/ON):
 #
-#   KD5EOC-10>BEACON/2:
-#   KR8X-7>BEACON,K5LRK*/2:
+#   SOURCE>DESTINATION[,DIGI1,DIGI2*]/PORT: <TAG>:
 #
-# Format observed on real hardware:
+# e.g.:
 #
-#   SOURCE>DESTINATION[,DIGI1,DIGI2*]/PORT:
+#   K5LRK>BEACON/2: <UI>:
+#   WB5NZV>KD5EOC-10,RSSTN*/2: <<C>>:
+#   KD5EOC-10>WB5NZV,RSSTN/2: <<I00>>:
+#
+# The bracketed tag is the KAM-XL's own frame-type annotation --
+# single "<...>" for an AX.25 v1 packet, double "<<...>>" for v2 (see
+# MCOM/MRESP in the manual). It's controlled by MCOM/MRESP, not by
+# MONITOR itself, and both default to ON -- so on a stock
+# configuration, *every* monitored header carries one of these, not
+# just connect/control frames. An earlier version of this regex had
+# no allowance for it at all, which meant HEADER_RE never matched a
+# single real-hardware header line -- every line silently failed to
+# parse (dropped, since _process_line() only appends non-matching
+# lines to an already-pending packet -- with nothing ever matching,
+# nothing ever became pending either), and the live monitor pane
+# stayed empty no matter how much real traffic the KAM-XL was
+# actually receiving. Found this way, on real hardware, rather than
+# from the manual -- the manual quote above about the tag format was
+# only actually confirmed against a live log once this bug surfaced.
 #
 # Digipeaters that have already repeated the packet are suffixed with
 # "*". This is scoped to MONITOR/unsolicited traffic only -- plain
@@ -21,7 +40,9 @@ HEADER_RE: re.Pattern = re.compile(
     r"^(?P<source>[A-Za-z0-9\-]+)"
     r">(?P<destination>[A-Za-z0-9\-]+)"
     r"(?:,(?P<digipeaters>[A-Za-z0-9\-\*,]+))?"
-    r"/(?P<port>\d+):$"
+    r"/(?P<port>\d+):"
+    r"(?:\s*<{1,2}(?P<frame_type>[^<>]*)>{1,2}:)?"
+    r"\s*$"
 )
 
 
@@ -39,6 +60,15 @@ class Packet:
     it doesn't include the header line itself. ``raw`` keeps the full
     original text (header + payload) for debugging or in case the
     parsed fields are ever wrong.
+
+    ``frame_type`` is the KAM-XL's own bracketed annotation from the
+    header line (e.g. "UI", "C", "UA", "D", "DM", "I00", "rr1"), when
+    MCOM/MRESP were on and it included one -- None otherwise. "UI" is
+    an ordinary unconnected/beacon frame; most other values are AX.25
+    connect-session control/supervisory traffic (connect and
+    disconnect requests and acknowledgments, numbered info frames,
+    receiver-ready acks, ...) that generally carries no payload of
+    its own -- see the manual's MCOM/MRESP entries for the full list.
     """
 
     source: str
@@ -47,6 +77,7 @@ class Packet:
     port: int
     payload: str
     raw: str
+    frame_type: Optional[str] = None
 
     @property
     def digipeated(self) -> bool:
@@ -183,6 +214,7 @@ class PacketParser:
                 else ()
             ),
             "port": int(match.group("port")),
+            "frame_type": match.group("frame_type"),
             "header_line": line,
             "payload_lines": [],
         }
@@ -209,6 +241,7 @@ class PacketParser:
             port=self._pending["port"],
             payload=payload,
             raw=raw,
+            frame_type=self._pending["frame_type"],
         )
 
         self._pending = None

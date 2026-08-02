@@ -142,14 +142,24 @@ class Packet:
     port: int
     payload: str
     raw: str
+    frame_type: Optional[str] = None
 ```
 
 Produced by `PacketParser`/`KAMXL.monitor()` from one MONITOR header
-line (`SOURCE>DESTINATION[,DIGI1,DIGI2*]/PORT:`) plus the payload
-lines that follow until the next header. `digipeaters` keeps the `*`
-suffix KAM-XL appends to any digipeater that's already repeated the
-packet; `digipeated` (a `bool` property) is `True` if any of them
-have.
+line (`SOURCE>DESTINATION[,DIGI1,DIGI2*]/PORT: <TAG>:`, the `<TAG>:`
+part present whenever `MCOM`/`MRESP` are `ON` -- the factory default)
+plus the payload lines that follow until the next header.
+`digipeaters` keeps the `*` suffix KAM-XL appends to any digipeater
+that's already repeated the packet; `digipeated` (a `bool` property)
+is `True` if any of them have.
+
+`frame_type` is that bracketed tag (`"UI"`, `"C"`, `"UA"`, `"D"`,
+`"DM"`, `"I00"`, `"rr1"`, ...) when present, `None` otherwise. `"UI"`
+is an ordinary unconnected/beacon frame; most other values are AX.25
+connect-session control/supervisory traffic between two *other*
+stations (connect/disconnect requests and acks, numbered info frames,
+receiver-ready acks, ...) and typically carry no payload of their
+own -- see the manual's `MCOM`/`MRESP` entries for the full list.
 
 `raw` is the full original text (header + payload) in case the parsed
 fields are ever wrong and you need to fall back to the source text.

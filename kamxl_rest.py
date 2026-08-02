@@ -270,7 +270,14 @@ TERMINAL_HTML = """<!doctype html>
 
     var routeSpan = document.createElement("span");
     routeSpan.className = "pktRoute";
-    routeSpan.textContent = "[port " + p.port + "] " + route + ": ";
+    // frame_type is the KAM-XL's own annotation (MCOM/MRESP, on by
+    // default): "UI" is an ordinary beacon/unconnected frame; most
+    // other values (C, UA, D, DM, I00, rr1, ...) are AX.25
+    // connect-session control/supervisory traffic between two OTHER
+    // stations, not something this library initiated -- shown as a
+    // tag so it doesn't read as if it were another beacon.
+    var tag = p.frame_type ? "<" + p.frame_type + "> " : "";
+    routeSpan.textContent = "[port " + p.port + "] " + tag + route + ": ";
 
     line.appendChild(timeSpan);
     line.appendChild(routeSpan);

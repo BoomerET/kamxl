@@ -194,9 +194,12 @@ works for anything, not just commands `kamxl.py` has typed metadata
 for.
 
 The monitor pane (milestone 5): connects to `/monitor/stream` via
-`EventSource` and prints each packet as it arrives -- time,
-port, source -> destination (with any digipeat path), payload. A
-status indicator (`live` / `reconnecting...`) reflects the
+`EventSource` and prints each packet as it arrives -- time, port, a
+`<TAG>` if the KAM-XL included one (see `frame_type` in
+[api_reference.md](api_reference.md) -- `<UI>` is an ordinary beacon,
+most others are AX.25 control/supervisory traffic between other
+stations), source -> destination (with any digipeat path), payload.
+A status indicator (`live` / `reconnecting...`) reflects the
 connection state; `EventSource` reconnects on its own if the
 connection drops. This only shows traffic if `MONITOR` is actually
 `ON` for the relevant port(s) on the KAM-XL -- the page doesn't

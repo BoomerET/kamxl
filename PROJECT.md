@@ -155,6 +155,60 @@ foundation -- Milestone 1 here. Direction as of now:
    (real SSE response, query-string auth specifically -- the actual
    in-browser rendering isn't unit-testable offline, same limitation
    as the terminal page's JS).
+
+   Testing this against real RF traffic (tuning to 144.39 MHz, the
+   North American APRS frequency, to get a reliable stream of real
+   packets rather than relying on a single weak DigiPi link) turned
+   up two more real, previously-invisible bugs -- the live monitor
+   pane had actually never worked against real hardware until both
+   were fixed:
+
+   - `DaemonClient.stream_events()` crashed with
+     `OSError: cannot read from timed out object` the moment it hit
+     its first idle keepalive window. CPython's `socket.makefile()`
+     sets a sticky flag the first time a read times out; every later
+     read on that same file object then fails immediately instead of
+     trying again. The SSE stream would run for one keepalive window,
+     die, and get silently replaced by `EventSource`'s own
+     auto-reconnect -- discarding anything that arrived during the
+     reconnect gap. Fixed with `select.select()`-based polling so
+     `readline()` only ever runs once data is already known to be
+     waiting, never touching the socket-level timeout path (and that
+     sticky flag) at all. `StreamEventsKeepaliveTests` in
+     `tests/test_rest.py` reproduces multiple keepalive cycles against
+     a real (idle) fake Unix-socket daemon.
+   - Bigger: `packet.py`'s `HEADER_RE` never actually matched a
+     real-hardware MONITOR line at all, for *any* packet, ever. `MCOM`
+     and `MRESP` -- both `ON/ON` by factory default -- append a
+     bracketed frame-type tag to every header
+     (`K5LRK>BEACON/2: <UI>:`, `WB5NZV>KD5EOC-10,RSSTN*/2: <<C>>:`,
+     `KD5EOC-10>WB5NZV,RSSTN/2: <<I00>>:`, and so on for `UA`, `D`,
+     `DM`, and numbered/lowercase supervisory frames like `rr1`) that
+     the original regex's strict end-of-line anchor had no allowance
+     for. Since `PacketParser._process_line()` only appends
+     non-matching lines to an *already-pending* packet, and nothing
+     had ever matched to start one, every single line -- going all
+     the way back to the daemon's original design -- was silently
+     dropped. This is exactly why the monitor pane looked empty even
+     with `MONITOR` confirmed on, hardware confirmed receiving
+     traffic (per DCD and the DigiPi's own log), and the SSE
+     connection confirmed `live`: nothing was ever wrong with any of
+     those layers, `packet.py` just never recognized a single real
+     header line. Found this way -- live, on hardware -- rather than
+     from the manual; the manual's tag-format description was only
+     actually confirmed against a real captured log once this bug
+     surfaced. Fixed by extending `HEADER_RE` with an optional
+     `<TAG>:`/`<<TAG>>:` suffix group, and added a new `frame_type`
+     field to `Packet` (`None` for untagged/synthetic fixtures, so
+     every existing offline test stayed backward compatible
+     unchanged) so `"UI"` (an ordinary beacon) can be told apart from
+     AX.25 control/supervisory chatter like `"C"`/`"UA"`/`"D"`/`"DM"`/
+     `"I00"`/`"rr1"` at a glance -- now shown as a `<TAG>` in the web
+     terminal's monitor pane. `RealHardwareFrameTypeTests` in
+     `tests/test_packet_parser.py` uses fixtures taken verbatim from a
+     live daemon log (single- and double-bracket tags, digipeated and
+     plain, connect/disconnect/info/supervisory frames, back-to-back
+     header lines with zero payload between them) to lock this in.
 6. **BBS with a modern web UI**.
 7. **APRS mapping and station database**.
 8. **Plugins for Wavelog, Winlink, and Home Assistant**.
