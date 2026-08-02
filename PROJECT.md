@@ -19,11 +19,11 @@ foundation -- Milestone 1 here. Direction as of now:
    share one physical serial stream on real hardware -- no amount of
    client-side locking changes that). Covered by
    `tests/test_daemon.py`, a real socket/threading integration test
-   against the same scripted fakes used elsewhere -- not yet run
-   against a real KAM-XL end-to-end (no hardware available in the
-   sandbox this was built in); worth a hardware smoke test before
-   relying on it. Single KAM-XL / serial port per daemon instance;
-   multi-device support isn't in scope yet.
+   against the same scripted fakes used elsewhere, and now also
+   verified end-to-end against Dave's real KAM-XL (see milestone 3's
+   notes below for how that hardware pass went). Single KAM-XL /
+   serial port per daemon instance; multi-device support isn't in
+   scope yet.
 3. **REST API** exposing the daemon's capabilities over HTTP -- done.
    `kamxl_rest.py`: stdlib `http.server` only (no new dependency),
    proxies HTTP requests to the daemon's Unix socket and translates
@@ -71,6 +71,44 @@ foundation -- Milestone 1 here. Direction as of now:
    `tests/test_rest.py`, exercising the timeout race directly with a
    deliberately slow fake Unix-socket server (no KAM-XL/daemon
    internals needed to prove the fix).
+
+   A third real bug turned up chasing the same hardware session:
+   `disconnect_station()`'s internal Ctrl-C-back-to-Command-mode step
+   always ran with its own hardcoded 5s timeout, completely ignoring
+   whatever `timeout` the caller passed to `disconnect_station()`
+   itself. Added a separate `command_mode_timeout` param (default 5,
+   unchanged for existing callers), threaded through the daemon and
+   `/disconnect`'s REST body, with the REST socket-timeout budget
+   updated to cover both sequential steps.
+
+   Both `kamxl_daemon.py` and `kamxl_rest.py` are now confirmed
+   working end-to-end against the real KAM-XL (`GET /params/VERSION`
+   returning `KAM XL -1.24160- SERIAL NUMBER - 00001D6C2798` over a
+   live `curl` call, daemon and REST as separate processes talking
+   over the Unix socket exactly as designed). Getting there took a
+   genuine debugging odyssey, worth recording since none of it turned
+   out to be the code: after ruling out the three real bugs above,
+   `/params/VERSION` and `/disconnect` were *still* timing out --
+   even a bare, daemon-free `KAMXL` connection in a standalone script
+   couldn't get a `cmd:` prompt back, which pointed at the TNC itself
+   rather than anything in this codebase. A machine reboot didn't fix
+   it either (expected, in hindsight -- that only resets the
+   computer, not the separate KAM-XL unit on the other end of the USB
+   cable). The leading theory became `INTFACE` being saved as `KISS`
+   from earlier Winlink/APRS use, which -- per the manual -- boots
+   the unit straight back into KISS mode on every power-up regardless
+   of a power cycle, and would explain silence to both plain commands
+   and Ctrl-C. Wrote `exitKissMode.py`, a small standalone script that
+   sends the raw 3-byte KISS-exit frame (`FEND FF FEND`) outside
+   `kamxl.py`'s normal protocol, as a way to test that theory directly
+   against hardware. In the end, the actual cause was simpler: the
+   post-reboot serial device had shifted (`/dev/ttyUSB2` before the
+   reboot, briefly assumed to be `/dev/ttyUSB1` after, actually
+   `/dev/ttyUSB0`), and the daemon had been correctly, faithfully
+   timing out talking to a port the KAM-XL wasn't even on. `--port`
+   being required now (see above) at least turns a *missing* port into
+   an immediate error -- a *wrong-but-existing* one still has to fail
+   the slow way, which is what happened here.
 4. **Web terminal** -- browser-based Terminal Mode session.
 5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
    in real time.
