@@ -48,8 +48,29 @@ foundation -- Milestone 1 here. Direction as of now:
    yet -- fixing the registration order (plus tightening
    `serve_forever()`'s default poll interval from 0.5s to 0.1s) took
    the full offline suite from ~35s for 54 tests down to ~7.5s for 74.
-   Same hardware caveat as the daemon: not yet run against a real
-   KAM-XL end-to-end.
+   Now running against real hardware -- and found two real bugs doing
+   it. First, `kamxl_daemon.py --port` defaulted to `COM8`, so
+   starting the daemon without explicitly passing the real device
+   (`/dev/ttyUSB2` on Dave's Linux box) silently tried to open a port
+   that didn't exist, and every command hung for its full timeout,
+   looking exactly like a genuine hardware fault. `--port` is now
+   required (or `$KAMXL_PORT`), failing fast with a clear error
+   instead. Second, and more subtly: `DaemonClient`'s own socket read
+   timeout and the KAM-XL-side command timeout it was waiting on both
+   defaulted to 10s, so the REST layer could give up (raising a raw,
+   unhandled `socket.timeout` -> 500) at essentially the same moment
+   the daemon was still legitimately waiting -- and for `/connect`
+   (default 60s) and `/disconnect` (default 30s) specifically, the
+   REST socket's fixed 10s timeout meant it would *always* give up
+   long before those operations could realistically finish, every
+   time. Fixed with a `DaemonTimeout` exception mapped to a proper
+   `504`, and per-call socket timeout overrides on `/connect`,
+   `/disconnect`, and `/connected/read` that track the caller-supplied
+   `timeout` with margin, instead of relying on a single fixed
+   default. Covered by `DaemonClientTimeoutTests` in
+   `tests/test_rest.py`, exercising the timeout race directly with a
+   deliberately slow fake Unix-socket server (no KAM-XL/daemon
+   internals needed to prove the fix).
 4. **Web terminal** -- browser-based Terminal Mode session.
 5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
    in real time.

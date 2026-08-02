@@ -61,6 +61,18 @@ class DaemonUnavailable(Exception):
     pass
 
 
+class DaemonTimeout(Exception):
+    """
+    The daemon didn't send a response within the expected time.
+
+    Distinct from DaemonUnavailable: the daemon is reachable, it's just
+    not answering yet -- most often because the underlying KAM-XL
+    command (or AX.25 connect/disconnect) is still legitimately in
+    progress and hasn't hit its own timeout yet.
+    """
+    pass
+
+
 class DaemonClient:
     """
     Talks to a running kamxl_daemon.py over its Unix socket.
@@ -72,18 +84,39 @@ class DaemonClient:
     enough that this isn't a meaningful cost for a LAN tool.
     """
 
-    def __init__(self, socket_path: str, timeout: float = 10) -> None:
+    # Default socket-level read timeout for a single call(). Must stay
+    # comfortably above kamxl.py's own default command_timeout (10s) --
+    # otherwise this socket read gives up before the daemon has even
+    # had a chance to hit *its* timeout and send back a clean JSON
+    # error, and callers see a raw, unhandled socket.timeout instead.
+    # Endpoints that relay a caller-supplied timeout (connect/
+    # disconnect/read_connected, which can legitimately run well past
+    # this) pass their own, larger _socket_timeout per call instead of
+    # relying on this default -- see kamxl_rest.py's _h_connect etc.
+    def __init__(self, socket_path: str, timeout: float = 15) -> None:
         self.socket_path = socket_path
         self.timeout = timeout
 
-    def call(self, method: str, **params: Any) -> Dict[str, Any]:
-        sock = self._connect()
+    def call(
+        self,
+        method: str,
+        _socket_timeout: Optional[float] = None,
+        **params: Any
+    ) -> Dict[str, Any]:
+        sock = self._connect(_socket_timeout)
 
         try:
             sock.sendall(self._encode("1", method, params))
 
             rfile = sock.makefile("r")
-            line = rfile.readline()
+
+            try:
+                line = rfile.readline()
+            except socket.timeout:
+                raise DaemonTimeout(
+                    f"Daemon didn't respond to {method!r} within "
+                    f"{_socket_timeout if _socket_timeout is not None else self.timeout}s"
+                )
 
             if not line:
                 raise DaemonUnavailable(
@@ -135,9 +168,9 @@ class DaemonClient:
         finally:
             sock.close()
 
-    def _connect(self) -> socket.socket:
+    def _connect(self, timeout: Optional[float] = None) -> socket.socket:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(self.timeout)
+        sock.settimeout(timeout if timeout is not None else self.timeout)
 
         try:
             sock.connect(self.socket_path)
@@ -232,6 +265,11 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
 
             try:
                 handler(match.groupdict(), query)
+            except DaemonTimeout as exc:
+                self._send_json(504, {
+                    "ok": False,
+                    "error": {"type": "DaemonTimeout", "message": str(exc)},
+                })
             except DaemonUnavailable as exc:
                 self._send_json(503, {
                     "ok": False,
@@ -300,12 +338,28 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _relay(self, method: str, **params: Any) -> None:
+    def _relay(
+        self,
+        method: str,
+        _socket_timeout: Optional[float] = None,
+        **params: Any
+    ) -> None:
         """
         Call a daemon method and translate its {"ok": ...} response
         directly into the equivalent HTTP response.
+
+        _socket_timeout overrides how long we wait on our end for the
+        daemon's reply. It must stay above whatever "timeout" (if any)
+        is being passed through in **params for the underlying KAM-XL
+        operation -- otherwise this call gives up before the daemon
+        could possibly have an answer yet, surfacing as a raw
+        DaemonTimeout instead of the operation actually completing.
         """
-        response = self.daemon.call(method, **params)
+        response = self.daemon.call(
+            method,
+            _socket_timeout=_socket_timeout,
+            **params
+        )
 
         if response.get("ok"):
             self._send_json(200, {"ok": True, "result": response.get("result")})
@@ -372,16 +426,28 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
             })
             return
 
+        connect_timeout = body.get("timeout", 60)
+
         self._relay(
             "connect_station",
             callsign=body["callsign"],
             via=body.get("via"),
-            timeout=body.get("timeout", 60),
+            timeout=connect_timeout,
+            # +5s margin over the KAM-XL-side timeout we just passed
+            # through, so this socket doesn't give up before the
+            # daemon could possibly have an answer.
+            _socket_timeout=connect_timeout + 5,
         )
 
     def _h_disconnect(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         body = self._read_json_body()
-        self._relay("disconnect_station", timeout=body.get("timeout", 30))
+        disconnect_timeout = body.get("timeout", 30)
+
+        self._relay(
+            "disconnect_station",
+            timeout=disconnect_timeout,
+            _socket_timeout=disconnect_timeout + 5,
+        )
 
     def _h_send_connected(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         body = self._read_json_body()
@@ -401,7 +467,11 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
 
     def _h_read_connected(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         timeout = float(query.get("timeout", ["5"])[0])
-        self._relay("read_connected", timeout=timeout)
+        self._relay(
+            "read_connected",
+            timeout=timeout,
+            _socket_timeout=timeout + 5,
+        )
 
     def _h_monitor_stream(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         self.send_response(200)

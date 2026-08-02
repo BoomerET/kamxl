@@ -82,6 +82,16 @@ call actually does.
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
 
+`/connect`, `/disconnect`, and `/connected/read` accept a `timeout`
+(seconds) that's passed straight through to the underlying KAM-XL
+operation -- e.g. `{"timeout": 90}` for a slow digipeated connect.
+This layer automatically waits a bit longer than that on its own end
+(so it doesn't give up on you before the daemon could possibly have
+an answer); a `504` means even that extended wait wasn't enough,
+which usually means the KAM-XL operation is still genuinely in
+progress rather than actually broken -- retry, or check status/logs
+before assuming something's wrong.
+
 ### Status codes
 
 | Status | Meaning |
@@ -93,6 +103,7 @@ as JSON arrays: `{"value": [true, false]}`.
 | 405 | Endpoint exists, wrong HTTP method |
 | 502 | Request reached the daemon, but the KAM-XL/daemon rejected or failed it (`error.type` is the underlying exception, e.g. `KAMConnectionError`, `KAMTimeoutError`, `KAMError`) |
 | 503 | Can't reach the daemon at all -- probably not running |
+| 504 | Reached the daemon, but it hasn't answered yet within the time this layer is willing to wait. Distinct from 502: the operation may still be in progress on the KAM-XL side (most likely on a slow/failed AX.25 connect) rather than having actually failed |
 
 ## Examples
 

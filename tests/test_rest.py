@@ -9,6 +9,7 @@ themselves.
 import http.client
 import json
 import os
+import socket
 import tempfile
 import threading
 import time
@@ -366,6 +367,79 @@ class MonitorStreamTests(RestTestCase):
         self.assertEqual(event["event"], "packet")
         self.assertEqual(event["data"]["source"], "KD5EOC-10")
         self.assertEqual(event["data"]["destination"], "BEACON")
+
+
+class DaemonClientTimeoutTests(unittest.TestCase):
+    """
+    Directly exercises DaemonClient's socket-timeout handling against a
+    minimal fake "daemon" that delays its response by a controlled
+    amount -- no KAMDaemon/KAMXL involved, just the socket layer.
+
+    Regression coverage for a real bug: DaemonClient's own socket read
+    timeout could fire before the daemon had a chance to answer, since
+    both defaulted to the same 10s window. Most visible on /connect
+    and /disconnect, whose default timeouts (60s/30s) are relayed to
+    the daemon but were *not* reflected in how long the REST layer
+    itself waited -- so a legitimately-in-progress connect attempt
+    surfaced as an unhandled socket.timeout / 500 instead of either
+    succeeding or getting a clean answer from the daemon.
+    """
+
+    def start_slow_daemon(self, delay):
+        tmp_dir = tempfile.mkdtemp()
+        socket_path = os.path.join(tmp_dir, "slow.sock")
+
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(socket_path)
+        server_sock.listen(1)
+        server_sock.settimeout(0.1)
+
+        stop = threading.Event()
+
+        def serve():
+            while not stop.is_set():
+                try:
+                    conn, _ = server_sock.accept()
+                except socket.timeout:
+                    continue
+
+                try:
+                    conn.recv(65536)  # the request line; contents unused
+                    time.sleep(delay)
+                    conn.sendall(
+                        (json.dumps(
+                            {"id": "1", "ok": True, "result": "slow"}
+                        ) + "\n").encode("ascii")
+                    )
+                finally:
+                    conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+
+        self.addCleanup(stop.set)
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server_sock.close)
+
+        return socket_path
+
+    def test_default_timeout_too_short_raises_daemon_timeout(self):
+        socket_path = self.start_slow_daemon(delay=0.3)
+        client = kamxl_rest.DaemonClient(socket_path, timeout=0.1)
+
+        with self.assertRaises(kamxl_rest.DaemonTimeout):
+            client.call("ping")
+
+    def test_per_call_socket_timeout_override_waits_long_enough(self):
+        # Same slow daemon and the same short default -- but this call
+        # asks for a longer wait, exactly like _h_connect/_h_disconnect
+        # do when a caller passes a large "timeout" body field.
+        socket_path = self.start_slow_daemon(delay=0.3)
+        client = kamxl_rest.DaemonClient(socket_path, timeout=0.1)
+
+        response = client.call("ping", _socket_timeout=1)
+
+        self.assertEqual(response["result"], "slow")
 
 
 if __name__ == "__main__":
