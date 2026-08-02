@@ -41,7 +41,6 @@ import logging
 import os
 import signal
 import socketserver
-import sys
 import threading
 import time
 
@@ -478,17 +477,38 @@ def main(argv: Optional[list] = None) -> None:
 
     daemon = KAMDaemon(kam, args.socket)
 
+    # socketserver.BaseServer.shutdown() blocks until serve_forever()'s
+    # own loop notices and exits -- and it deadlocks if called from the
+    # same thread that's running serve_forever(), since that thread is
+    # exactly what's suspended (mid-loop) to run this signal handler in
+    # the first place. It can only ever resume once the handler
+    # returns, and the handler can't return until it does. So
+    # serve_forever() runs on a background thread instead, and the
+    # signal handler just flags a stop and lets the main thread do the
+    # actual daemon.shutdown() call, safely, from outside that thread.
+    shutdown_requested = threading.Event()
+
     def _handle_signal(signum: int, frame: Any) -> None:
         logger.info("Shutting down (signal %s)...", signum)
-        daemon.shutdown()
-        sys.exit(0)
+        shutdown_requested.set()
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
+    server_thread = threading.Thread(
+        target=daemon.serve_forever,
+        daemon=True
+    )
+    server_thread.start()
+
     logger.info("KAM-XL daemon: %s -> %s", args.port, args.socket)
 
-    daemon.serve_forever()
+    try:
+        while not shutdown_requested.is_set():
+            shutdown_requested.wait(timeout=1)
+    finally:
+        daemon.shutdown()
+        server_thread.join(timeout=5)
 
 
 if __name__ == "__main__":
