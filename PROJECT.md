@@ -209,7 +209,51 @@ foundation -- Milestone 1 here. Direction as of now:
      live daemon log (single- and double-bracket tags, digipeated and
      plain, connect/disconnect/info/supervisory frames, back-to-back
      header lines with zero payload between them) to lock this in.
-6. **BBS with a modern web UI**.
+6. **BBS with a modern web UI** -- done, scoped down from the
+   original idea after research turned up a much better path: the
+   KAM-XL already has a full BBS in firmware (PBBS -- mail, bulletins,
+   forwarding, SYSOP access), and neither `kamxl.py` nor the daemon
+   had any support at all for incoming AX.25 connects or multiple
+   simultaneous sessions, which a custom-built BBS would have needed
+   from scratch. Given the choice (asked directly rather than
+   assumed), the call was to build a **read-only web UI on top of the
+   existing firmware PBBS** instead of a new BBS engine -- list
+   messages, read one, done. Much smaller, and the actual AX.25
+   session handling stays where it's already proven: the firmware.
+
+   Turns out this fits the existing connected-mode primitives
+   perfectly. Per the manual, accessing PBBS -- even your own, even
+   locally -- is just an ordinary `CONNECT` to `MYPBBS`, and a local
+   serial connect gets automatic SYSOP privilege (no password
+   exchange). So `KAMXL.list_pbbs_messages()`/`read_pbbs_message()`
+   (new in `kamxl.py`) are thin compositions of
+   `connect_station()`/`send_connected()`/`read_connected()`/
+   `disconnect_station()` -- all four already hardened by earlier
+   milestones -- sending `L` or `R <n>` at PBBS's own
+   `ENTER COMMAND:` prompt and handing the raw text to a new `pbbs.py`
+   (parsing/dataclasses, the same relationship `packet.py` has to raw
+   MONITOR text: `PBBSMessageSummary` for a list row, `PBBSMessage`
+   for a read message). `kamxl_daemon.py` gained
+   `pbbs.list_messages`/`pbbs.read_message`; `kamxl_rest.py` gained
+   `GET /pbbs/messages`, `GET /pbbs/messages/<N>`, and a second
+   self-contained page at `GET /pbbs` (list + click-to-read, linked
+   from the terminal page's header and back).
+
+   **Not yet verified against real hardware** -- unlike everything
+   else in this project, `pbbs.py`'s parsing was built from the
+   manual's documented list/read output format, not a captured live
+   session, because getting to a real PBBS session wasn't practical
+   during this pass. Treat it as a first draft; expect the parser to
+   need the same kind of real-hardware correction `packet.py`'s
+   `HEADER_RE` needed after milestone 5. Offline coverage
+   (`tests/test_pbbs.py`, plus daemon/REST tests) uses the manual's
+   own example lines as fixtures and stubs the connected-mode
+   primitives directly for the call-order/argument-flow/error-handling
+   behavior, rather than trying to chain a full connect+command+
+   disconnect exchange through one fake serial queue (`read_connected()`'s
+   "collect for N seconds" semantics doesn't compose cleanly that
+   way -- found this the hard way while writing these tests, not
+   while testing hardware).
 7. **APRS mapping and station database**.
 8. **Plugins for Wavelog, Winlink, and Home Assistant**.
 

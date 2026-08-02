@@ -167,7 +167,10 @@ TERMINAL_HTML = """<!doctype html>
   <div id="monitorFeed"></div>
 </div>
 <div id="terminalPane">
-  <div class="paneHeader"><span>TERMINAL</span></div>
+  <div class="paneHeader">
+    <span>TERMINAL</span>
+    <a href="#" id="pbbsLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">pbbs</a>
+  </div>
   <div id="output"></div>
   <div id="inputRow">
     <div id="prompt">cmd:</div>
@@ -240,6 +243,8 @@ TERMINAL_HTML = """<!doctype html>
   log("kamxl web terminal -- type a command (e.g. VERSION, DISPLAY, MYCALL) and press Enter.");
   input.focus();
 
+  document.getElementById("pbbsLink").href = authedUrl("/pbbs");
+
   // -- Live monitor (milestone 5) ------------------------------------
   //
   // Packets only actually flow if MONITOR is ON for the relevant
@@ -311,6 +316,210 @@ TERMINAL_HTML = """<!doctype html>
     };
   } else {
     setStatus("down", "unsupported");
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
+# Milestone 6: a second self-contained page, served at GET /pbbs, for
+# the KAM-XL's built-in firmware PBBS (mailbox) -- read-only per
+# Dave's chosen scope: list messages, click one to read it. Kept as
+# its own page rather than folded into the terminal/monitor page --
+# unlike those two (both live, continuously-updating views that
+# naturally share screen space), this is list/detail navigation, a
+# different enough shape to stand on its own. Linked from the
+# terminal page's header and back again, both carrying ?token=
+# forward the same way the terminal and monitor pane already do.
+PBBS_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>kamxl PBBS</title>
+<style>
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: #0b0f10;
+    color: #d4f7d4;
+    font-family: "Courier New", Courier, monospace;
+  }
+  .paneHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: #101617;
+    border-bottom: 1px solid #234;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    color: #888;
+    box-sizing: border-box;
+  }
+  .paneHeader a, .paneHeader button {
+    background: none;
+    border: 1px solid #345;
+    color: #9c9;
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .paneHeader a:hover, .paneHeader button:hover { border-color: #5a8; color: #cfc; }
+  #content { padding: 12px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td {
+    text-align: left;
+    padding: 4px 10px 4px 0;
+    border-bottom: 1px solid #1c2526;
+    white-space: nowrap;
+  }
+  th { color: #789; font-weight: normal; }
+  td.subject { white-space: normal; }
+  tr.msgRow { cursor: pointer; }
+  tr.msgRow:hover { background: #101c1d; }
+  .err { color: #f77; }
+  .notice { color: #999; font-style: italic; }
+  #detail {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding-top: 8px;
+    line-height: 1.4;
+  }
+  #detail .hdr { color: #6cf; margin-bottom: 8px; }
+  #backLink { display: inline-block; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<div class="paneHeader">
+  <span>PBBS</span>
+  <a href="#" id="terminalLink">terminal</a>
+</div>
+<div id="content">
+  <div class="notice">Loading messages...</div>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var token = params.get("token") || "";
+  var content = document.getElementById("content");
+
+  function authedUrl(path) {
+    if (!token) return path;
+    var sep = path.indexOf("?") === -1 ? "?" : "&";
+    return path + sep + "token=" + encodeURIComponent(token);
+  }
+
+  document.getElementById("terminalLink").href = authedUrl("/");
+
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.textContent = text == null ? "" : String(text);
+    return div.innerHTML;
+  }
+
+  async function apiGet(path) {
+    var res = await fetch(authedUrl(path));
+    var payload = await res.json();
+
+    if (!payload.ok) {
+      throw new Error(
+        (payload.error && payload.error.message) || "Request failed"
+      );
+    }
+
+    return payload.result;
+  }
+
+  function renderError(err) {
+    content.innerHTML =
+      '<div class="err">' + escapeHtml(err.message || String(err)) + "</div>";
+  }
+
+  async function showList() {
+    content.innerHTML = '<div class="notice">Loading messages...</div>';
+
+    try {
+      var messages = await apiGet("/pbbs/messages");
+
+      if (!messages.length) {
+        content.innerHTML = '<div class="notice">No messages.</div>';
+        return;
+      }
+
+      var html = "<table><thead><tr>" +
+        "<th>#</th><th>Type</th><th>Size</th><th>To</th>" +
+        "<th>From</th><th>Date</th><th>Subject</th>" +
+        "</tr></thead><tbody>";
+
+      messages.forEach(function (m) {
+        html += '<tr class="msgRow" data-number="' + m.number + '">' +
+          "<td>" + escapeHtml(m.number) + "</td>" +
+          "<td>" + escapeHtml(m.msg_type) + (m.status ? "/" + escapeHtml(m.status) : "") + "</td>" +
+          "<td>" + escapeHtml(m.size) + "</td>" +
+          "<td>" + escapeHtml(m.to) + "</td>" +
+          "<td>" + escapeHtml(m.from_call) + "</td>" +
+          "<td>" + escapeHtml(m.date) + (m.pages ? " (" + m.pages + "p)" : "") + "</td>" +
+          '<td class="subject">' + escapeHtml(m.subject) + "</td>" +
+          "</tr>";
+      });
+
+      html += "</tbody></table>";
+      content.innerHTML = html;
+
+      Array.prototype.forEach.call(
+        content.querySelectorAll(".msgRow"),
+        function (row) {
+          row.addEventListener("click", function () {
+            showMessage(row.getAttribute("data-number"));
+          });
+        }
+      );
+    } catch (err) {
+      renderError(err);
+    }
+  }
+
+  async function showMessage(number) {
+    content.innerHTML = '<div class="notice">Loading message ' +
+      escapeHtml(number) + "...</div>";
+
+    try {
+      var message = await apiGet("/pbbs/messages/" + encodeURIComponent(number));
+
+      if (!message) {
+        content.innerHTML =
+          '<a href="#" id="backLink">&larr; back to list</a>' +
+          '<div class="err">Message ' + escapeHtml(number) + " not found.</div>";
+      } else {
+        var hdr = "MSG#" + message.number + "  " + message.date +
+          "  FROM " + message.from_call + "  TO " + message.to +
+          (message.routing ? "  " + message.routing : "");
+
+        content.innerHTML =
+          '<a href="#" id="backLink">&larr; back to list</a>' +
+          '<div id="detail"><div class="hdr">' + escapeHtml(hdr) + "</div>" +
+          escapeHtml(message.body) + "</div>";
+      }
+
+      document.getElementById("backLink").addEventListener(
+        "click", function (e) { e.preventDefault(); showList(); }
+      );
+    } catch (err) {
+      renderError(err);
+    }
+  }
+
+  if (!token) {
+    content.innerHTML =
+      '<div class="notice">No ?token=... in this page\\'s URL. If the ' +
+      "server was started with authentication, requests below will " +
+      "fail with 401 -- reload with ?token=&lt;your key&gt; appended " +
+      "to the URL.</div>";
+  } else {
+    showList();
   }
 })();
 </script>
@@ -503,6 +712,9 @@ ROUTES: Tuple[Tuple[str, "re.Pattern", str], ...] = (
     ("GET", re.compile(r"^/monitor/stream$"), "_h_monitor_stream"),
     ("GET", re.compile(r"^/$"), "_h_terminal_page"),
     ("POST", re.compile(r"^/terminal/exec$"), "_h_terminal_exec"),
+    ("GET", re.compile(r"^/pbbs$"), "_h_pbbs_page"),
+    ("GET", re.compile(r"^/pbbs/messages$"), "_h_pbbs_list_messages"),
+    ("GET", re.compile(r"^/pbbs/messages/(?P<number>\d+)$"), "_h_pbbs_read_message"),
 )
 
 
@@ -834,6 +1046,52 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
             # Client navigated away / closed the EventSource -- not an
             # error, just the end of this stream.
             pass
+
+    # -- PBBS (milestone 6) ---------------------------------------------
+    #
+    # Read-only wrapper around the KAM-XL's own firmware PBBS. Each
+    # call drives a full connect/command/disconnect cycle on the
+    # daemon side (see KAMXL.list_pbbs_messages()/read_pbbs_message()),
+    # so the socket timeout budget has to cover connect_timeout +
+    # read_timeout + disconnect_station()'s own worst case (up to
+    # ~35s between its command_mode_timeout and timeout defaults),
+    # not just the individual step timeouts.
+
+    def _h_pbbs_page(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        body = PBBS_HTML.encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _h_pbbs_list_messages(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        mypbbs = query.get("mypbbs", [None])[0]
+        connect_timeout = float(query.get("connect_timeout", ["15"])[0])
+        read_timeout = float(query.get("read_timeout", ["5"])[0])
+
+        self._relay(
+            "pbbs.list_messages",
+            mypbbs=mypbbs,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            _socket_timeout=connect_timeout + read_timeout + 40,
+        )
+
+    def _h_pbbs_read_message(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        mypbbs = query.get("mypbbs", [None])[0]
+        connect_timeout = float(query.get("connect_timeout", ["15"])[0])
+        read_timeout = float(query.get("read_timeout", ["5"])[0])
+
+        self._relay(
+            "pbbs.read_message",
+            number=int(params["number"]),
+            mypbbs=mypbbs,
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            _socket_timeout=connect_timeout + read_timeout + 40,
+        )
 
 
 # ---------------------------------------------------------------------------

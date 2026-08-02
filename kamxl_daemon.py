@@ -44,7 +44,7 @@ import socketserver
 import threading
 import time
 
-from typing import Any, Callable, Dict, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from kamxl import KAMXL, KAMError
 from packet import Packet, PacketParser
@@ -98,6 +98,8 @@ class KAMDaemon:
             "send_connected": self._m_send_connected,
             "read_connected": self._m_read_connected,
             "disconnect_station": self._m_disconnect_station,
+            "pbbs.list_messages": self._m_pbbs_list_messages,
+            "pbbs.read_message": self._m_pbbs_read_message,
             "monitor.subscribe": self._m_monitor_subscribe,
             "monitor.unsubscribe": self._m_monitor_unsubscribe,
         }
@@ -202,6 +204,31 @@ class KAMDaemon:
                 params.get("timeout", 30),
                 command_mode_timeout=params.get("command_mode_timeout", 5)
             )
+
+    def _m_pbbs_list_messages(
+        self, params: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        with self._kam_lock:
+            messages = self.kam.list_pbbs_messages(
+                mypbbs=params.get("mypbbs"),
+                connect_timeout=params.get("connect_timeout", 15),
+                read_timeout=params.get("read_timeout", 5),
+            )
+
+        return [dataclasses.asdict(message) for message in messages]
+
+    def _m_pbbs_read_message(
+        self, params: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        with self._kam_lock:
+            message = self.kam.read_pbbs_message(
+                int(params["number"]),
+                mypbbs=params.get("mypbbs"),
+                connect_timeout=params.get("connect_timeout", 15),
+                read_timeout=params.get("read_timeout", 5),
+            )
+
+        return dataclasses.asdict(message) if message is not None else None
 
     def _m_monitor_subscribe(self, params: Dict[str, Any]) -> None:
         # Actual subscriber-set membership is handled by the request

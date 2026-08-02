@@ -67,8 +67,9 @@ more).
 - [docs/daemon.md](docs/daemon.md) -- the background daemon: protocol,
   methods, concurrency model
 - [docs/rest_api.md](docs/rest_api.md) -- the REST API: endpoints,
-  auth, live monitoring over Server-Sent Events, and the
-  self-contained web terminal it serves at `GET /`
+  auth, live monitoring over Server-Sent Events, the self-contained
+  web terminal it serves at `GET /`, and the read-only PBBS browser
+  at `GET /pbbs`
 - [examples/](examples/) -- runnable scripts, including two that need
   no hardware at all
 

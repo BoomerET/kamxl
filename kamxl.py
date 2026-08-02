@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from packet import Packet, PacketParser
+from pbbs import PBBSMessage, PBBSMessageSummary, parse_message, parse_message_list
 
 
 # ---------------------------------------------------------------------------
@@ -1235,3 +1236,71 @@ class KAMXL:
             )
 
         return text
+
+    # -----------------------------------------------------------------------
+    # PBBS (Milestone 6)
+    # -----------------------------------------------------------------------
+    #
+    # Not a BBS this project implements -- the KAM-XL's own firmware
+    # PBBS already handles message storage, forwarding, and SYSOP
+    # access. These two methods just drive it through the same
+    # connected-mode primitives above (connect_station() /
+    # send_connected() / read_connected() / disconnect_station()) and
+    # hand the raw text off to pbbs.py for parsing. Per the manual, a
+    # connect from the local serial terminal gets automatic SYSOP
+    # privilege -- no password exchange needed.
+
+    def list_pbbs_messages(
+        self,
+        mypbbs: Optional[str] = None,
+        connect_timeout: float = 15,
+        read_timeout: float = 5
+    ) -> List[PBBSMessageSummary]:
+        """
+        Connect to the KAM-XL's own PBBS and list its messages.
+
+        ``mypbbs`` defaults to whatever MYPBBS is currently set to on
+        the KAM-XL. Disconnects with disconnect_station() when done --
+        deliberately not PBBS's own "B" (bye) command, so ending the
+        session reuses the already-hardened disconnect path instead
+        of adding a second, PBBS-specific way to do the same thing.
+        """
+        if mypbbs is None:
+            mypbbs = self.get("MYPBBS")
+
+        self.connect_station(mypbbs, timeout=connect_timeout)
+
+        try:
+            self.send_connected("L")
+            text = self.read_connected(timeout=read_timeout)
+        finally:
+            self.disconnect_station()
+
+        return parse_message_list(text)
+
+    def read_pbbs_message(
+        self,
+        number: int,
+        mypbbs: Optional[str] = None,
+        connect_timeout: float = 15,
+        read_timeout: float = 5
+    ) -> Optional[PBBSMessage]:
+        """
+        Connect to the KAM-XL's own PBBS and read one message.
+
+        Returns None if the response didn't look like a message (e.g.
+        the number doesn't exist) rather than raising -- see
+        pbbs.parse_message()'s docstring.
+        """
+        if mypbbs is None:
+            mypbbs = self.get("MYPBBS")
+
+        self.connect_station(mypbbs, timeout=connect_timeout)
+
+        try:
+            self.send_connected(f"R {number}")
+            text = self.read_connected(timeout=read_timeout)
+        finally:
+            self.disconnect_station()
+
+        return parse_message(text)

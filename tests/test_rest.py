@@ -18,6 +18,7 @@ import unittest
 from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 
 from kamxl_daemon import KAMDaemon
+from pbbs import PBBSMessage, PBBSMessageSummary
 import kamxl_rest
 
 
@@ -382,6 +383,87 @@ class TerminalTests(RestTestCase):
         self.addCleanup(conn.close)
 
         conn.request("GET", "/")
+        response = conn.getresponse()
+        response.read()
+
+        self.assertEqual(response.status, 401)
+
+
+class PBBSEndpointTests(RestTestCase):
+    """
+    daemon.kam.list_pbbs_messages()/read_pbbs_message() are stubbed
+    directly here (same reasoning as tests/test_daemon.py's
+    PBBSTests) -- these are about the REST layer's own routing,
+    query-param handling, and response shape, not the underlying
+    connect/command/disconnect exchange (covered in tests/test_pbbs.py)
+    or the KAM-XL text format itself (unverified against real
+    hardware, see pbbs.py's module docstring).
+    """
+
+    def test_list_messages(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+
+        daemon.kam.list_pbbs_messages = lambda **kwargs: [
+            PBBSMessageSummary(
+                number=6, msg_type="B", status=None, size=45,
+                to="KEPS", from_call="W3IWI", date="10/19/01 09:37:11",
+                pages=2, subject="Line Element set",
+            )
+        ]
+
+        status, payload = self.request(port, "GET", "/pbbs/messages")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["result"]), 1)
+        self.assertEqual(payload["result"][0]["subject"], "Line Element set")
+
+    def test_read_message(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+
+        daemon.kam.read_pbbs_message = lambda number, **kwargs: PBBSMessage(
+            number=number, date="02/10/92 10:30:58", from_call="KB0NYK",
+            to="HELP", routing=None, body="hi",
+        )
+
+        status, payload = self.request(port, "GET", "/pbbs/messages/2")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"]["from_call"], "KB0NYK")
+
+    def test_read_message_not_found(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+
+        daemon.kam.read_pbbs_message = lambda number, **kwargs: None
+
+        status, payload = self.request(port, "GET", "/pbbs/messages/999")
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["result"])
+
+    def test_pbbs_page_served(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/pbbs?token=test-token")
+        response = conn.getresponse()
+        html = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("Content-Type"), "text/html; charset=utf-8"
+        )
+        self.assertIn("kamxl PBBS", html)
+        self.assertIn("/pbbs/messages", html)
+
+    def test_pbbs_page_requires_auth_when_enabled(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/pbbs")
         response = conn.getresponse()
         response.read()
 

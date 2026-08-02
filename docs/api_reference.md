@@ -90,6 +90,26 @@ KAM-XL parameters that apply separately to port 1 and port 2 use a
 | `listen(seconds=60, callback=None)` | Collect raw unsolicited text for a fixed window. Returns the text, or streams it to `callback` if given. |
 | `monitor(seconds=None, callback=None)` | Like `listen()`, but yields parsed `Packet` objects instead of raw text. Returns a generator if `callback` is omitted (`for packet in kam.monitor(): ...`); otherwise blocks and calls `callback(packet)` for each one. Defaults to running until interrupted (`seconds=None`), unlike `listen()`. |
 
+### PBBS (Milestone 6)
+
+Not a BBS this library implements -- the KAM-XL's own firmware PBBS
+(mailbox) already handles message storage, forwarding, and SYSOP
+access. These two methods drive it through the connected-mode methods
+above (a connect to `MYPBBS`, one command, a disconnect) and hand the
+raw text to `pbbs.py` for parsing. A connect from the local serial
+terminal gets automatic SYSOP privilege per the manual -- no password
+exchange needed.
+
+**Unverified against real hardware** -- `pbbs.py`'s parsing is built
+from the manual's documented output format, not a captured live
+session (see `pbbs.py`'s module docstring). Treat it as a first draft
+pending an actual PBBS test.
+
+| Method | Description |
+| --- | --- |
+| `list_pbbs_messages(mypbbs=None, connect_timeout=15, read_timeout=5)` | Connect to the PBBS and list its messages. `mypbbs` defaults to the KAM-XL's current `MYPBBS` setting. Returns a list of `PBBSMessageSummary`. |
+| `read_pbbs_message(number, mypbbs=None, connect_timeout=15, read_timeout=5)` | Connect to the PBBS and read one message. Returns a `PBBSMessage`, or `None` if the response didn't look like a message (e.g. the number doesn't exist). |
+
 ### Exceptions
 
 All inherit from `KAMError`.
@@ -178,3 +198,37 @@ somewhere other than `listen()`/`read_available()` (see
 | --- | --- |
 | `feed(text)` | Feed newly-received text in. Returns a list of `Packet`s completed as a result (usually 0 or 1). |
 | `flush()` | Finalize whatever's left buffered -- call at the end of a session to not lose the last packet, which is only known to be "done" once a following header line arrives. |
+
+## `PBBSMessageSummary` / `PBBSMessage`
+
+*(from `pbbs.py`)*
+
+```python
+@dataclass(frozen=True)
+class PBBSMessageSummary:
+    number: int
+    msg_type: str            # 'B' bulletin, 'T' traffic, 'P' private
+    status: Optional[str]
+    size: int
+    to: str
+    from_call: str
+    date: str
+    pages: Optional[int]
+    subject: str
+
+
+@dataclass(frozen=True)
+class PBBSMessage:
+    number: int
+    date: str
+    from_call: str
+    to: str
+    routing: Optional[str]   # "@..." hierarchical routing, if present
+    body: str
+```
+
+`PBBSMessageSummary` is one row of `list_pbbs_messages()`'s result;
+`PBBSMessage` is `read_pbbs_message()`'s result. Both are parsed from
+the KAM-XL's own PBBS command output by `pbbs.parse_message_list()`
+and `pbbs.parse_message()` respectively -- **unverified against real
+hardware**, see the PBBS methods section above.

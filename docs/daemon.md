@@ -109,6 +109,8 @@ omitted to use their default.
 | `disconnect_station` | `timeout` (optional), `command_mode_timeout` (optional, default 5) -- separately bounds the initial Ctrl-C-back-to-Command-mode step, which runs before the DISCONNECT confirmation itself |
 | `monitor.subscribe` | *(none)* -- this connection starts receiving `packet` events |
 | `monitor.unsubscribe` | *(none)* -- stops them |
+| `pbbs.list_messages` | `mypbbs` (optional), `connect_timeout` (optional, default 15), `read_timeout` (optional, default 5) -- drives a full connect/`L`/disconnect cycle against the KAM-XL's own firmware PBBS; returns a list of `PBBSMessageSummary` dicts. **Unverified against real hardware**, see `pbbs.py`'s module docstring |
+| `pbbs.read_message` | `number`, `mypbbs`/`connect_timeout`/`read_timeout` (all optional, same as above) -- connect/`R n`/disconnect; returns a `PBBSMessage` dict, or `null` if the number didn't resolve to a message |
 
 Unknown methods and missing required params come back as an
 `ok: false` response (`error.type` of `KAMError` or `MissingParam`

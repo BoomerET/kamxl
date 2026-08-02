@@ -88,6 +88,9 @@ call actually does.
 | GET | `/monitor/stream` | | Server-Sent Events, see below |
 | POST | `/terminal/exec` | `{"command", "timeout"?}` | Raw command passthrough, see [Web terminal](#web-terminal) |
 | GET | `/` | | Serves the web terminal page |
+| GET | `/pbbs/messages` | | List PBBS messages, see [PBBS](#pbbs) |
+| GET | `/pbbs/messages/<N>` | | Read PBBS message `N`; `result` is `null` if not found |
+| GET | `/pbbs` | | Serves the PBBS web page |
 
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
@@ -218,6 +221,39 @@ page reads `token` from its own URL and carries it forward on every
 request it makes (see the query-string auth fallback above). Without
 a valid token, `GET /` itself returns `401` just like any other
 endpoint when authentication is enabled.
+
+## PBBS
+
+`GET /pbbs` serves a second self-contained page: a **read-only**
+browser for the KAM-XL's own built-in firmware PBBS (mailbox). Not a
+BBS this project implements -- the firmware handles message storage,
+forwarding, and SYSOP access; this is just a list-and-read view over
+it. Linked from the web terminal's header, and back again.
+
+Behind it, `GET /pbbs/messages` and `GET /pbbs/messages/<N>` each
+drive a full AX.25 connect/command/disconnect cycle against the
+KAM-XL's `MYPBBS` on every call -- there's no persistent PBBS
+session, so expect each request to take a few seconds, not be
+instant. A connect from the local serial terminal gets automatic
+SYSOP privilege per the manual, no password needed.
+
+```
+curl -H "Authorization: Bearer $TOKEN" http://kam-host:8080/pbbs/messages
+curl -H "Authorization: Bearer $TOKEN" http://kam-host:8080/pbbs/messages/6
+```
+
+`/pbbs/messages/<N>` returns `{"ok": true, "result": null}` (not a
+404) if `N` doesn't resolve to a message -- distinguishing "asked for
+something that doesn't exist" from "the endpoint itself doesn't
+exist."
+
+**Unverified against real hardware.** Unlike everything else in this
+document, the PBBS message-list and message-read parsing (`pbbs.py`)
+was built from the manual's documented output format, not a captured
+live session -- it's a first draft, expected to need adjustment the
+same way `packet.py`'s `HEADER_RE` did once actually tested against a
+real PBBS mailbox. If messages come back empty, missing, or
+misparsed, that's the first place to look.
 
 ## Testing
 

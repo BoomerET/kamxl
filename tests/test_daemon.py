@@ -17,6 +17,7 @@ import unittest
 from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 
 from kamxl_daemon import KAMDaemon
+from pbbs import PBBSMessage, PBBSMessageSummary
 
 
 class _Client:
@@ -332,6 +333,101 @@ class ConnectedModePassthroughTests(DaemonTestCase):
 
         self.assertTrue(response["ok"])
         self.assertIn("DISCONNECTED", response["result"])
+
+
+class PBBSTests(DaemonTestCase):
+    """
+    KAMXL.list_pbbs_messages()/read_pbbs_message() are already
+    covered directly (call order, argument flow, error handling) in
+    tests/test_pbbs.py using stubbed primitives -- chaining a real
+    connect+command+disconnect exchange through one shared
+    CannedSerial queue doesn't work cleanly (read_connected()'s
+    "collect for N seconds" semantics drains every queued chunk in a
+    single call, regardless of which logical step they were meant
+    for). So here, daemon.kam.list_pbbs_messages/read_pbbs_message
+    are stubbed directly too -- these tests are about what the daemon
+    layer itself adds on top: lock acquisition, params passed
+    through, and Packet-style dataclass -> JSON-safe dict conversion.
+    """
+
+    def test_list_messages_returns_json_safe_dicts(self):
+        daemon, socket_path = self.start_daemon(ScriptedSerial({}))
+
+        daemon.kam.list_pbbs_messages = lambda **kwargs: [
+            PBBSMessageSummary(
+                number=6, msg_type="B", status=None, size=45,
+                to="KEPS", from_call="W3IWI", date="10/19/01 09:37:11",
+                pages=2, subject="Line Element set",
+            )
+        ]
+
+        client = self.connect(socket_path)
+        response = client.call("pbbs.list_messages")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(len(response["result"]), 1)
+        self.assertEqual(
+            response["result"][0]["subject"], "Line Element set"
+        )
+        self.assertEqual(response["result"][0]["from_call"], "W3IWI")
+
+    def test_list_messages_passes_params_through(self):
+        daemon, socket_path = self.start_daemon(ScriptedSerial({}))
+
+        captured = {}
+
+        def fake_list(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        daemon.kam.list_pbbs_messages = fake_list
+
+        client = self.connect(socket_path)
+        client.call(
+            "pbbs.list_messages",
+            mypbbs="AI6K-2",
+            connect_timeout=10,
+            read_timeout=3
+        )
+
+        self.assertEqual(captured["mypbbs"], "AI6K-2")
+        self.assertEqual(captured["connect_timeout"], 10)
+        self.assertEqual(captured["read_timeout"], 3)
+
+    def test_read_message_returns_dict(self):
+        daemon, socket_path = self.start_daemon(ScriptedSerial({}))
+
+        daemon.kam.read_pbbs_message = lambda number, **kwargs: PBBSMessage(
+            number=number, date="02/10/92 10:30:58", from_call="KB0NYK",
+            to="HELP", routing=None, body="hi",
+        )
+
+        client = self.connect(socket_path)
+        response = client.call("pbbs.read_message", number=2)
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["from_call"], "KB0NYK")
+        self.assertEqual(response["result"]["number"], 2)
+
+    def test_read_message_not_found_returns_none(self):
+        daemon, socket_path = self.start_daemon(ScriptedSerial({}))
+
+        daemon.kam.read_pbbs_message = lambda number, **kwargs: None
+
+        client = self.connect(socket_path)
+        response = client.call("pbbs.read_message", number=999)
+
+        self.assertTrue(response["ok"])
+        self.assertIsNone(response["result"])
+
+    def test_read_message_missing_number_is_missing_param(self):
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("pbbs.read_message")
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["type"], "MissingParam")
 
 
 class MonitorSubscribeTests(DaemonTestCase):
