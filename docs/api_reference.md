@@ -100,15 +100,24 @@ raw text to `pbbs.py` for parsing. A connect from the local serial
 terminal gets automatic SYSOP privilege per the manual -- no password
 exchange needed.
 
-**Unverified against real hardware** -- `pbbs.py`'s parsing is built
-from the manual's documented output format, not a captured live
-session (see `pbbs.py`'s module docstring). Treat it as a first draft
-pending an actual PBBS test.
+**Verified against real hardware** -- confirmed against a real KAM-XL
+PBBS for both an empty mailbox and a populated one (see `pbbs.py`'s
+module docstring and `tests/test_pbbs.py`'s `RealHardwareEmptyMailboxTests`).
+
+`read_timeout` is a worst-case ceiling, not a fixed wait: both methods
+collect the connected-mode response through a private
+`_collect_pbbs_response()` helper that polls in short slices and
+returns as soon as the PBBS's `ENTER COMMAND:` prompt reappears
+(meaning it's done sending), rather than always waiting out the full
+duration. This replaced an earlier design that did a single
+`read_connected(timeout=read_timeout)` call -- on real hardware, a
+message that took slightly longer than that fixed window to fully
+arrive had its last line silently truncated.
 
 | Method | Description |
 | --- | --- |
-| `list_pbbs_messages(mypbbs=None, connect_timeout=15, read_timeout=5)` | Connect to the PBBS and list its messages. `mypbbs` defaults to the KAM-XL's current `MYPBBS` setting. Returns a list of `PBBSMessageSummary`. |
-| `read_pbbs_message(number, mypbbs=None, connect_timeout=15, read_timeout=5)` | Connect to the PBBS and read one message. Returns a `PBBSMessage`, or `None` if the response didn't look like a message (e.g. the number doesn't exist). |
+| `list_pbbs_messages(mypbbs=None, connect_timeout=15, read_timeout=10)` | Connect to the PBBS and list its messages. `mypbbs` defaults to the KAM-XL's current `MYPBBS` setting. Returns a list of `PBBSMessageSummary`. |
+| `read_pbbs_message(number, mypbbs=None, connect_timeout=15, read_timeout=10)` | Connect to the PBBS and read one message. Returns a `PBBSMessage`, or `None` if the response didn't look like a message (e.g. the number doesn't exist). |
 
 ### Exceptions
 

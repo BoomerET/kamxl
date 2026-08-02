@@ -212,7 +212,7 @@ class KAMDaemon:
             messages = self.kam.list_pbbs_messages(
                 mypbbs=params.get("mypbbs"),
                 connect_timeout=params.get("connect_timeout", 15),
-                read_timeout=params.get("read_timeout", 5),
+                read_timeout=params.get("read_timeout", 10),
             )
 
         return [dataclasses.asdict(message) for message in messages]
@@ -225,7 +225,7 @@ class KAMDaemon:
                 int(params["number"]),
                 mypbbs=params.get("mypbbs"),
                 connect_timeout=params.get("connect_timeout", 15),
-                read_timeout=params.get("read_timeout", 5),
+                read_timeout=params.get("read_timeout", 10),
             )
 
         return dataclasses.asdict(message) if message is not None else None

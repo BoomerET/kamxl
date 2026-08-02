@@ -1069,7 +1069,7 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
     def _h_pbbs_list_messages(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         mypbbs = query.get("mypbbs", [None])[0]
         connect_timeout = float(query.get("connect_timeout", ["15"])[0])
-        read_timeout = float(query.get("read_timeout", ["5"])[0])
+        read_timeout = float(query.get("read_timeout", ["10"])[0])
 
         self._relay(
             "pbbs.list_messages",
@@ -1082,7 +1082,7 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
     def _h_pbbs_read_message(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         mypbbs = query.get("mypbbs", [None])[0]
         connect_timeout = float(query.get("connect_timeout", ["15"])[0])
-        read_timeout = float(query.get("read_timeout", ["5"])[0])
+        read_timeout = float(query.get("read_timeout", ["10"])[0])
 
         self._relay(
             "pbbs.read_message",

@@ -247,13 +247,14 @@ curl -H "Authorization: Bearer $TOKEN" http://kam-host:8080/pbbs/messages/6
 something that doesn't exist" from "the endpoint itself doesn't
 exist."
 
-**Unverified against real hardware.** Unlike everything else in this
-document, the PBBS message-list and message-read parsing (`pbbs.py`)
-was built from the manual's documented output format, not a captured
-live session -- it's a first draft, expected to need adjustment the
-same way `packet.py`'s `HEADER_RE` did once actually tested against a
-real PBBS mailbox. If messages come back empty, missing, or
-misparsed, that's the first place to look.
+**Verified against real hardware**, for both an empty mailbox and a
+populated one. Each endpoint accepts an optional `read_timeout` query
+parameter (default `10`) -- this is a worst-case ceiling, not a fixed
+wait: the underlying library polls the connected-mode response in
+short slices and returns as soon as the PBBS's `ENTER COMMAND:`
+prompt reappears. This replaced an earlier fixed-wait design after a
+real message on hardware had its last line silently truncated because
+it took slightly longer than the old 5s window to fully arrive.
 
 ## Testing
 

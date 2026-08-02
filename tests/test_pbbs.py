@@ -8,7 +8,7 @@ built from the manual's documented output format, a best-effort first
 draft pending further real testing, the same way packet.py's
 HEADER_RE needed adjustment after milestone 5.
 
-The one exception: RealHardwareEmptyMailboxTests, added after Dave
+The exceptions: RealHardwareEmptyMailboxTests, added after Dave
 tested this live -- the empty-mailbox case is now confirmed. It also
 revealed two real formatting details the manual didn't show: the PBBS
 sign-on banner reads "NNN BYTES AVAILABLE IN NN BLOCKS" (not the
@@ -17,8 +17,19 @@ example showed), and an empty mailbox prints "THERE ARE NO MESSAGES".
 Neither needed a parser change -- parse_message_list() already
 skips any line that doesn't look like a numbered message row, which
 handled both correctly the first time, by design rather than luck.
-The populated-list-row and message-read formats are still unverified
--- that needs an actual message in the mailbox to test.
+
+CollectPbbsResponseTests is the other exception -- a regression test
+for a real bug found reading a populated mailbox: the last line of a
+real message went missing, because the old code did a single
+read_connected(timeout=N) call and returned whatever had arrived in
+that fixed window, whether or not the PBBS was actually done sending.
+Fixed with KAMXL._collect_pbbs_response(), which polls in short
+slices and stops once the PBBS's "ENTER COMMAND:" prompt reappears.
+These tests stub read_connected() to return a message's text split
+across multiple calls -- with the last line only present in a later
+chunk -- to prove the fix actually assembles the full response before
+handing it to pbbs.py, rather than just changing behavior without
+proof.
 """
 
 import unittest
@@ -255,6 +266,106 @@ class KAMXLPbbsIntegrationTests(unittest.TestCase):
             kam.list_pbbs_messages(mypbbs="AI6K-1")
 
         self.assertIn(("disconnect_station",), calls)
+
+
+class CollectPbbsResponseTests(unittest.TestCase):
+    """
+    Regression tests for the real truncation bug Dave hit on real
+    hardware: reading a populated PBBS message came back missing its
+    last line, because the old code did a single
+    read_connected(timeout=read_timeout) call and just returned
+    whatever had arrived in that fixed window -- even if the PBBS
+    hadn't finished sending yet. _collect_pbbs_response() fixes this
+    by polling read_connected() in short slices and only stopping once
+    "ENTER COMMAND" has actually shown up in the accumulated text.
+
+    These stub read_connected() directly (rather than driving it
+    through CannedSerial) to simulate the PBBS response arriving
+    across several separate reads, with the real message's last line
+    only present in a later chunk -- exactly what a single fixed-
+    duration read would have missed.
+    """
+
+    def _kam_with_chunked_read(self, chunks):
+        kam = make_kam(CannedSerial([]))
+        remaining = list(chunks)
+
+        def read_connected(**kwargs):
+            if remaining:
+                return remaining.pop(0)
+
+            return ""
+
+        kam.read_connected = read_connected
+        kam.connect_station = lambda callsign, **kwargs: None
+        kam.send_connected = lambda text, **kwargs: None
+        kam.disconnect_station = lambda **kwargs: None
+
+        return kam
+
+    def test_read_pbbs_message_assembles_chunks_split_before_last_line(self):
+        # Simulates the real bug: the message body's final line
+        # ("Last line, delayed." -- standing in for whatever Dave's
+        # actual last line was) and the closing prompt only arrive in
+        # a later read_connected() call, after some earlier lines
+        # already came back in a prior call. A single fixed-duration
+        # read that happened to only catch the first chunk would have
+        # silently dropped that last line, same as what Dave saw.
+        chunks = [
+            "MSG#2 02/10/92 10:30:58 FROM KB0NYK TO HELP "
+            "@WA4EWV.#STX.TX.USA.NOAM\r\n"
+            "This is the message body.\r\n",
+            "Last line, delayed.\r\n"
+            "ENTER COMMAND: B,J,K,L,R,S, or Help >",
+        ]
+        kam = self._kam_with_chunked_read(chunks)
+
+        message = kam.read_pbbs_message(2, mypbbs="AI6K-1")
+
+        self.assertIsNotNone(message)
+        self.assertEqual(
+            message.body,
+            "This is the message body.\nLast line, delayed."
+        )
+
+    def test_list_pbbs_messages_assembles_chunks_before_prompt(self):
+        chunks = [
+            "MSG# ST SIZE TO      FROM   DATE                SUBJECT\r\n"
+            "6    B  45   KEPS    W3IWI  10/19/01 09:37:11 2  "
+            "Line Element set\r\n",
+            "4    B  26   HELP    WB5BBW 10/19/01 09:34:05    Xerox 820\r\n"
+            "102120 BYTES AVAILABLE\r\n"
+            "NEXT MESSAGE NUMBER 7\r\n"
+            "ENTER COMMAND: B,J,K,L,R,S, or Help >",
+        ]
+        kam = self._kam_with_chunked_read(chunks)
+
+        messages = kam.list_pbbs_messages(mypbbs="AI6K-1")
+
+        self.assertEqual(len(messages), 2)
+        self.assertEqual(messages[1].subject, "Xerox 820")
+
+    def test_stops_polling_as_soon_as_prompt_appears(self):
+        # If the prompt shows up in the very first chunk, there's no
+        # reason to keep calling read_connected() again -- proves the
+        # "stop as soon as done" half of the fix, not just "assembles
+        # everything across the full timeout ceiling."
+        call_count = 0
+
+        def read_connected(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            return READ_TEXT
+
+        kam = make_kam(CannedSerial([]))
+        kam.read_connected = read_connected
+        kam.connect_station = lambda callsign, **kwargs: None
+        kam.send_connected = lambda text, **kwargs: None
+        kam.disconnect_station = lambda **kwargs: None
+
+        kam.read_pbbs_message(2, mypbbs="AI6K-1")
+
+        self.assertEqual(call_count, 1)
 
 
 if __name__ == "__main__":

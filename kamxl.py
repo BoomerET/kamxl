@@ -1259,20 +1259,57 @@ class KAMXL:
     # connect from the local serial terminal gets automatic SYSOP
     # privilege -- no password exchange needed.
 
+    def _collect_pbbs_response(self, timeout: float) -> str:
+        """
+        Collect connected-mode text from a PBBS command, stopping as
+        soon as its "ENTER COMMAND:" prompt reappears (meaning it's
+        finished and waiting for the next command) rather than always
+        waiting out one fixed-duration read_connected() call.
+
+        Real bug this fixes: a single read_connected(timeout=N) call
+        just returns whatever arrived in N seconds, whether or not the
+        PBBS was actually done sending -- a real message (found live,
+        on hardware) had its last line silently truncated because it
+        took slightly longer than the old fixed 5s window to fully
+        arrive. Polling in short slices and watching for the prompt
+        means the common case returns as soon as it's actually
+        finished, and ``timeout`` becomes a true worst-case ceiling
+        instead of "the length of every single call, whether needed
+        or not."
+        """
+        deadline = time.monotonic() + timeout
+        text = ""
+
+        while True:
+            remaining = deadline - time.monotonic()
+
+            if remaining <= 0:
+                break
+
+            text += self.read_connected(timeout=min(1.0, remaining))
+
+            if "ENTER COMMAND" in text.upper():
+                break
+
+        return text
+
     def list_pbbs_messages(
         self,
         mypbbs: Optional[str] = None,
         connect_timeout: float = 15,
-        read_timeout: float = 5
+        read_timeout: float = 10
     ) -> List[PBBSMessageSummary]:
         """
         Connect to the KAM-XL's own PBBS and list its messages.
 
         ``mypbbs`` defaults to whatever MYPBBS is currently set to on
-        the KAM-XL. Disconnects with disconnect_station() when done --
-        deliberately not PBBS's own "B" (bye) command, so ending the
-        session reuses the already-hardened disconnect path instead
-        of adding a second, PBBS-specific way to do the same thing.
+        the KAM-XL. ``read_timeout`` is a worst-case ceiling -- see
+        _collect_pbbs_response(), which normally returns as soon as
+        PBBS's prompt reappears, well before this elapses. Disconnects
+        with disconnect_station() when done -- deliberately not PBBS's
+        own "B" (bye) command, so ending the session reuses the
+        already-hardened disconnect path instead of adding a second,
+        PBBS-specific way to do the same thing.
         """
         if mypbbs is None:
             mypbbs = self.get("MYPBBS")
@@ -1281,7 +1318,7 @@ class KAMXL:
 
         try:
             self.send_connected("L")
-            text = self.read_connected(timeout=read_timeout)
+            text = self._collect_pbbs_response(read_timeout)
         finally:
             self.disconnect_station()
 
@@ -1301,14 +1338,15 @@ class KAMXL:
         number: int,
         mypbbs: Optional[str] = None,
         connect_timeout: float = 15,
-        read_timeout: float = 5
+        read_timeout: float = 10
     ) -> Optional[PBBSMessage]:
         """
         Connect to the KAM-XL's own PBBS and read one message.
 
-        Returns None if the response didn't look like a message (e.g.
-        the number doesn't exist) rather than raising -- see
-        pbbs.parse_message()'s docstring.
+        ``read_timeout`` is a worst-case ceiling -- see
+        _collect_pbbs_response(). Returns None if the response didn't
+        look like a message (e.g. the number doesn't exist) rather
+        than raising -- see pbbs.parse_message()'s docstring.
         """
         if mypbbs is None:
             mypbbs = self.get("MYPBBS")
@@ -1317,7 +1355,7 @@ class KAMXL:
 
         try:
             self.send_connected(f"R {number}")
-            text = self.read_connected(timeout=read_timeout)
+            text = self._collect_pbbs_response(read_timeout)
         finally:
             self.disconnect_station()
 

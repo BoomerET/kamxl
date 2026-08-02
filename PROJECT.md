@@ -239,30 +239,49 @@ foundation -- Milestone 1 here. Direction as of now:
    self-contained page at `GET /pbbs` (list + click-to-read, linked
    from the terminal page's header and back).
 
-   **Partially verified against real hardware.** The empty-mailbox
-   case is now confirmed -- Dave's KAM-XL has PBBS enabled with no
-   messages, and `parse_message_list()` correctly returned `[]`
-   against the real raw text (added as `RealHardwareEmptyMailboxTests`
-   in `tests/test_pbbs.py`). That text also revealed two real
-   formatting details the manual didn't show -- the sign-on banner
-   reads `NNN BYTES AVAILABLE IN NN BLOCKS` (not the manual's plain
-   `NNN BYTES AVAILABLE`), and an empty mailbox prints
+   **Verified against real hardware**, including a real bug found and
+   fixed along the way. The empty-mailbox case came first -- Dave's
+   KAM-XL had PBBS enabled with no messages, and `parse_message_list()`
+   correctly returned `[]` against the real raw text (added as
+   `RealHardwareEmptyMailboxTests` in `tests/test_pbbs.py`). That text
+   also revealed two real formatting details the manual didn't show --
+   the sign-on banner reads `NNN BYTES AVAILABLE IN NN BLOCKS` (not the
+   manual's plain `NNN BYTES AVAILABLE`), and an empty mailbox prints
    `THERE ARE NO MESSAGES` -- neither needed a parser change, since
    `parse_message_list()` already skips any line that doesn't look
-   like a numbered message row (worked correctly by design, not
-   luck). The populated-list-row format and message-read format are
-   still unverified -- that needs an actual message in the mailbox to
-   test, which hasn't happened yet. Treat those two as a first draft;
-   expect them to need the same kind of real-hardware correction
-   `packet.py`'s `HEADER_RE` needed after milestone 5. Offline coverage
-   (`tests/test_pbbs.py`, plus daemon/REST tests) uses the manual's
-   own example lines as fixtures and stubs the connected-mode
-   primitives directly for the call-order/argument-flow/error-handling
-   behavior, rather than trying to chain a full connect+command+
-   disconnect exchange through one fake serial queue (`read_connected()`'s
-   "collect for N seconds" semantics doesn't compose cleanly that
-   way -- found this the hard way while writing these tests, not
-   while testing hardware).
+   like a numbered message row (worked correctly by design, not luck).
+
+   Testing a populated mailbox surfaced a real bug, though: Dave sent
+   himself a message from DigiPi, read it back through the web UI, and
+   the last line was missing. Root cause was `read_connected(timeout=N)`
+   -- it collects serial data for a fixed wall-clock duration and
+   returns whatever arrived, regardless of whether the PBBS had
+   actually finished sending. The message's full text (body + closing
+   `ENTER COMMAND:` prompt) took slightly longer than the old 5s window
+   to arrive, so the tail got cut off. Fixed with a new private helper,
+   `KAMXL._collect_pbbs_response()`, that polls `read_connected()` in
+   short (max 1s) slices and stops as soon as `ENTER COMMAND` shows up
+   in the accumulated text -- the reliable signal that PBBS is done and
+   waiting for the next command. `list_pbbs_messages()`/
+   `read_pbbs_message()` now call this instead of a single
+   `read_connected()` call, and their (and the daemon's and REST API's)
+   `read_timeout` default moved from `5` to `10`, since it's now a
+   worst-case ceiling rather than a duration always paid in full.
+   `CollectPbbsResponseTests` in `tests/test_pbbs.py` locks this in by
+   stubbing `read_connected()` to return a real message's text split
+   across multiple calls -- with the last line only present in a later
+   chunk -- and confirming it's still correctly assembled before
+   parsing, plus confirms the polling stops on the very first call when
+   the prompt is already present (not always burning the full ceiling).
+
+   Offline coverage (`tests/test_pbbs.py`, plus daemon/REST tests) uses
+   the manual's own example lines as fixtures and stubs the
+   connected-mode primitives directly for the call-order/argument-flow/
+   error-handling behavior, rather than trying to chain a full
+   connect+command+disconnect exchange through one fake serial queue
+   (`read_connected()`'s "collect for N seconds" semantics doesn't
+   compose cleanly that way -- found this the hard way while writing
+   these tests, not while testing hardware).
 7. **APRS mapping and station database**.
 8. **Plugins for Wavelog, Winlink, and Home Assistant**.
 
