@@ -243,8 +243,9 @@ TERMINAL_HTML = """<!doctype html>
   //
   // Packets only actually flow if MONITOR is ON for the relevant
   // port(s) on the KAM-XL itself -- this page doesn't turn it on for
-  // you. Type e.g. "MONITOR ON ON" in the terminal above, or use
-  // PUT /params/MONITOR, if the feed stays empty.
+  // you. Type e.g. "MONITOR ON/ON" (multi-port values are
+  // slash-separated, not space-separated) in the terminal above, or
+  // use PUT /params/MONITOR, if the feed stays empty.
 
   function setStatus(state, text) {
     monitorStatus.className = state;

@@ -189,9 +189,9 @@ status indicator (`live` / `reconnecting...`) reflects the
 connection state; `EventSource` reconnects on its own if the
 connection drops. This only shows traffic if `MONITOR` is actually
 `ON` for the relevant port(s) on the KAM-XL -- the page doesn't
-enable it for you, so if the feed stays empty, type
-`MONITOR ON ON` (or similar for your ports) into the terminal pane
-first, or `PUT /params/MONITOR`.
+enable it for you, so if the feed stays empty, type `MONITOR ON/ON`
+(multi-port values are slash-separated, not space-separated) into
+the terminal pane first, or `PUT /params/MONITOR`.
 
 ```
 curl -H "Authorization: Bearer $TOKEN" \
