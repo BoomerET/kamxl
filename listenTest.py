@@ -1,7 +1,7 @@
 from kamxl import KAMXL, KAMError
 
 
-kam = KAMXL("COM8")
+kam = KAMXL("/dev/ttyUSB2")
 
 # Set before the try block so the restore-on-exit logic below can safely
 # check "did we actually read an original value" without risking a

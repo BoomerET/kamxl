@@ -1,6 +1,7 @@
+#!/usr/bin/env python3
 from kamxl import KAMXL
 
-kam = KAMXL("COM8")
+kam = KAMXL("/dev/ttyUSB0")
 
 try:
     kam.connect()

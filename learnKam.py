@@ -1,7 +1,7 @@
 from kamxl import KAMXL, KAMError
 
 
-PORT = "COM8"
+PORT = "/dev/ttyUSB0"
 
 
 def main():
