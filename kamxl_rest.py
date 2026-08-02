@@ -48,6 +48,136 @@ DEFAULT_PORT = 8080
 # a malformed request, which is a client-side (4xx) problem.
 _DAEMON_ERROR_STATUS = 502
 
+# Milestone 4: a single self-contained page (no build step, no CDN
+# dependency) served directly by this process at GET / -- type a raw
+# Terminal Mode command, see the raw response, same as a serial
+# terminal program would show. Reads ?token=... from its own URL and
+# carries it forward on every request it makes, since that's the
+# auth mechanism this REST layer accepts specifically so a browser
+# context (which can't always set a custom header) can use it.
+TERMINAL_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>kamxl web terminal</title>
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0f10;
+    color: #d4f7d4;
+    font-family: "Courier New", Courier, monospace;
+  }
+  #output {
+    height: calc(100% - 48px);
+    overflow-y: auto;
+    padding: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    box-sizing: border-box;
+    font-size: 14px;
+  }
+  #inputRow {
+    display: flex;
+    height: 48px;
+    border-top: 1px solid #234;
+    box-sizing: border-box;
+  }
+  #prompt {
+    padding: 0 8px;
+    display: flex;
+    align-items: center;
+    color: #6f6;
+  }
+  #cmdInput {
+    flex: 1;
+    background: #0b0f10;
+    color: #d4f7d4;
+    border: none;
+    outline: none;
+    font: inherit;
+    font-size: 14px;
+  }
+  .err { color: #f77; }
+  .sent { color: #6cf; }
+  .notice { color: #999; font-style: italic; }
+</style>
+</head>
+<body>
+<div id="output"></div>
+<div id="inputRow">
+  <div id="prompt">cmd:</div>
+  <input id="cmdInput" autocomplete="off" autofocus
+         placeholder="type a KAM-XL command and press Enter..." />
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var token = params.get("token") || "";
+  var output = document.getElementById("output");
+  var input = document.getElementById("cmdInput");
+
+  function authedUrl(path) {
+    if (!token) return path;
+    var sep = path.indexOf("?") === -1 ? "?" : "&";
+    return path + sep + "token=" + encodeURIComponent(token);
+  }
+
+  function log(text, cls) {
+    var line = document.createElement("div");
+    if (cls) line.className = cls;
+    line.textContent = text;
+    output.appendChild(line);
+    output.scrollTop = output.scrollHeight;
+  }
+
+  if (!token) {
+    log(
+      "No ?token=... in this page's URL. If the server was started " +
+      "with authentication, every command below will fail with 401 " +
+      "-- reload with ?token=<your key> appended to the URL.",
+      "notice"
+    );
+  }
+
+  async function sendCommand(command) {
+    log("cmd: " + command, "sent");
+
+    try {
+      var res = await fetch(authedUrl("/terminal/exec"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ command: command })
+      });
+      var payload = await res.json();
+
+      if (payload.ok) {
+        log(payload.result || "(no output)");
+      } else {
+        log((payload.error && payload.error.message) || "Unknown error", "err");
+      }
+    } catch (err) {
+      log("Request failed: " + err, "err");
+    }
+  }
+
+  input.addEventListener("keydown", function (e) {
+    if (e.key !== "Enter") return;
+
+    var command = input.value.trim();
+    input.value = "";
+
+    if (command) sendCommand(command);
+  });
+
+  log("kamxl web terminal -- type a command (e.g. VERSION, DISPLAY, MYCALL) and press Enter.");
+  input.focus();
+})();
+</script>
+</body>
+</html>
+"""
+
 logger = logging.getLogger("kamxl_rest")
 logger.addHandler(logging.NullHandler())
 
@@ -212,6 +342,8 @@ ROUTES: Tuple[Tuple[str, "re.Pattern", str], ...] = (
     ("POST", re.compile(r"^/connected/send$"), "_h_send_connected"),
     ("GET", re.compile(r"^/connected/read$"), "_h_read_connected"),
     ("GET", re.compile(r"^/monitor/stream$"), "_h_monitor_stream"),
+    ("GET", re.compile(r"^/$"), "_h_terminal_page"),
+    ("POST", re.compile(r"^/terminal/exec$"), "_h_terminal_exec"),
 )
 
 
@@ -302,17 +434,34 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
         header = self.headers.get("Authorization", "")
         expected = f"Bearer {self.api_key}"
 
-        if not secrets.compare_digest(header, expected):
-            self._send_json(401, {
-                "ok": False,
-                "error": {
-                    "type": "Unauthorized",
-                    "message": "Missing or invalid Authorization: Bearer <token> header",
-                },
-            })
-            return False
+        if secrets.compare_digest(header, expected):
+            return True
 
-        return True
+        # The web terminal (milestone 4) and live monitor streaming
+        # (milestone 5) both run in a browser context that can't
+        # always set a custom header -- EventSource never can, and a
+        # page loaded from a bare URL shouldn't require typing the
+        # token into a JS prompt. Accept the same token as a
+        # `?token=` query parameter as a fallback. Checked second
+        # (the header is still preferred) since a URL is more likely
+        # to end up logged or in browser history than a header is.
+        query = parse_qs(urlparse(self.path).query)
+        token = query.get("token", [None])[0]
+
+        if token is not None and secrets.compare_digest(token, self.api_key):
+            return True
+
+        self._send_json(401, {
+            "ok": False,
+            "error": {
+                "type": "Unauthorized",
+                "message": (
+                    "Missing or invalid Authorization: Bearer <token> "
+                    "header (or ?token=<key> query parameter)"
+                ),
+            },
+        })
+        return False
 
     # -- Body / response helpers --------------------------------------
 
@@ -476,6 +625,34 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
             "read_connected",
             timeout=timeout,
             _socket_timeout=timeout + 5,
+        )
+
+    def _h_terminal_page(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        body = TERMINAL_HTML.encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _h_terminal_exec(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        body = self._read_json_body()
+
+        if "command" not in body:
+            self._send_json(400, {
+                "ok": False,
+                "error": {"type": "MissingParam", "message": "Missing required body field: 'command'"},
+            })
+            return
+
+        command_timeout = body.get("timeout", 10)
+
+        self._relay(
+            "send_command",
+            command=body["command"],
+            timeout=command_timeout,
+            _socket_timeout=command_timeout + 5,
         )
 
     def _h_monitor_stream(self, params: Dict[str, str], query: Dict[str, Any]) -> None:

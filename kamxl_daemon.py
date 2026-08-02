@@ -90,6 +90,7 @@ class KAMDaemon:
             "status": self._m_status,
             "get": self._m_get,
             "set": self._m_set,
+            "send_command": self._m_send_command,
             "get_typed": self._m_get_typed,
             "set_typed": self._m_set_typed,
             "get_configuration": self._m_get_configuration,
@@ -140,6 +141,19 @@ class KAMDaemon:
     def _m_set(self, params: Dict[str, Any]) -> str:
         with self._kam_lock:
             return self.kam.set(params["command"], params["value"])
+
+    def _m_send_command(self, params: Dict[str, Any]) -> str:
+        # Raw pass-through for the web terminal (milestone 4): whatever
+        # text the user typed, sent verbatim, whatever text came back
+        # before the next "cmd:" prompt -- unlike get/get_typed, this
+        # doesn't assume a "COMMAND value" response shape, so it works
+        # for commands kamxl.py has no typed knowledge of (BEACON,
+        # HEARD, MHEARD, ...).
+        with self._kam_lock:
+            return self.kam.send_command(
+                params["command"],
+                command_timeout=params.get("timeout", 10)
+            )
 
     def _m_get_typed(self, params: Dict[str, Any]) -> Any:
         with self._kam_lock:

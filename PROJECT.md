@@ -109,7 +109,33 @@ foundation -- Milestone 1 here. Direction as of now:
    being required now (see above) at least turns a *missing* port into
    an immediate error -- a *wrong-but-existing* one still has to fail
    the slow way, which is what happened here.
-4. **Web terminal** -- browser-based Terminal Mode session.
+4. **Web terminal** -- browser-based Terminal Mode session -- done.
+   `kamxl_rest.py` now serves it directly: `GET /` returns a single
+   self-contained HTML/JS page (no build step, no external
+   dependency, consistent with the REST API's own stdlib-only
+   philosophy), with a terminal-like input box that POSTs to a new
+   `/terminal/exec` endpoint. That endpoint -- and the daemon's new
+   `send_command` method underneath it -- is a raw pass-through
+   (`KAMXL.send_command()`, no assumption about response shape),
+   deliberately distinct from `get`/`get_typed`: it works for any
+   command, including ones `kamxl.py` has no typed metadata for at
+   all (`BEACON`, `MHEARD`, ...), which is the point of a *terminal*
+   as opposed to a structured params API.
+
+   This surfaced the same browser-auth gap already flagged when the
+   REST API shipped: `EventSource` (needed for milestone 5's live
+   monitor) and a bare `GET /` page load can't set a custom
+   `Authorization` header. Solved generally rather than just for the
+   terminal page -- `_check_auth()` now also accepts the same token
+   as a `?token=` query parameter, checked as a fallback after the
+   header. The web terminal page reads `token` from its own URL and
+   carries it forward on every request it makes. This also means
+   milestone 5 shouldn't need any further backend auth changes when
+   it wires up `/monitor/stream` from a browser.
+
+   Covered by `SendCommandTests` in `tests/test_daemon.py` and
+   `TerminalTests` plus new query-string-token auth tests in
+   `tests/test_rest.py`.
 5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
    in real time.
 6. **BBS with a modern web UI**.

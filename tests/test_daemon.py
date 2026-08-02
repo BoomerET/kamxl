@@ -207,6 +207,38 @@ class TypedCommandTests(DaemonTestCase):
         )
 
 
+class SendCommandTests(DaemonTestCase):
+    """
+    The raw send_command passthrough added for the web terminal
+    (milestone 4) -- unlike get/get_typed, it doesn't assume a
+    "COMMAND value" response shape, so it works for commands kamxl.py
+    has no typed metadata for at all.
+    """
+
+    def test_send_arbitrary_command_returns_raw_text(self):
+        _, socket_path = self.start_daemon(ScriptedSerial({
+            "BEACON": "BEACON EVERY 0",
+        }))
+        client = self.connect(socket_path)
+
+        response = client.call("send_command", command="BEACON")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"], "BEACON EVERY 0")
+
+    def test_unknown_command_still_returns_whatever_came_back(self):
+        # No typed metadata, no scripted response -- just the echo
+        # and prompt, same as an unrecognized command would look on
+        # real hardware.
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("send_command", command="NOTAREALCOMMAND")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"], "")
+
+
 class ErrorHandlingTests(DaemonTestCase):
     def test_unknown_method(self):
         _, socket_path = self.start_daemon(ScriptedSerial({}))

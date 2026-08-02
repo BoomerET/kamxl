@@ -87,13 +87,14 @@ omitted to use their default.
 | `status` | *(none)* -- returns `{"connected": bool, "port": str, "monitor_subscribers": int}` |
 | `get` | `command` |
 | `set` | `command`, `value` |
+| `send_command` | `command`, `timeout` (optional) -- raw pass-through: sends ``command`` verbatim, returns whatever text comes back before the next `cmd:` prompt, no assumption about response shape. Powers the web terminal (milestone 4); `get`/`get_typed` are usually the better fit for anything with known typed metadata |
 | `get_typed` | `command` |
 | `set_typed` | `command`, `value` |
 | `get_configuration` | *(none)* |
 | `connect_station` | `callsign`, `via` (optional, string or array), `timeout` (optional) |
 | `send_connected` | `text`, `add_cr` (optional) |
 | `read_connected` | `timeout` (optional) |
-| `disconnect_station` | `timeout` (optional) |
+| `disconnect_station` | `timeout` (optional), `command_mode_timeout` (optional, default 5) -- separately bounds the initial Ctrl-C-back-to-Command-mode step, which runs before the DISCONNECT confirmation itself |
 | `monitor.subscribe` | *(none)* -- this connection starts receiving `packet` events |
 | `monitor.unsubscribe` | *(none)* -- stops them |
 

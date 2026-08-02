@@ -140,6 +140,30 @@ class AuthTests(RestTestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
 
+    def test_query_string_token_accepted(self):
+        # The web terminal page and EventSource (neither can always
+        # set a custom header) authenticate via ?token=... instead --
+        # request() with token=None and the URL built manually here
+        # to exercise that path specifically, rather than the
+        # Authorization header.
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "GET", f"/ping?token=test-token", token=None
+        )
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["ok"])
+
+    def test_wrong_query_string_token_rejected(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "GET", "/ping?token=wrong", token=None
+        )
+
+        self.assertEqual(status, 401)
+
 
 class EndpointTests(RestTestCase):
     def test_ping(self):
@@ -298,6 +322,66 @@ class ConnectDisconnectTests(RestTestCase):
 
         self.assertEqual(status, 200)
         self.assertIn("DISCONNECTED", payload["result"])
+
+
+class TerminalTests(RestTestCase):
+    """
+    Milestone 4: the raw command passthrough and the self-contained
+    web terminal page served directly by kamxl_rest.py.
+    """
+
+    def test_exec_returns_raw_command_output(self):
+        _, port = self.start_stack(ScriptedSerial({
+            "BEACON": "BEACON EVERY 0",
+        }))
+
+        status, payload = self.request(
+            port, "POST", "/terminal/exec",
+            body={"command": "BEACON"}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"], "BEACON EVERY 0")
+
+    def test_exec_missing_command_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/terminal/exec",
+            body={}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_page_served_at_root(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/?token=test-token")
+        response = conn.getresponse()
+        html = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("Content-Type"), "text/html; charset=utf-8"
+        )
+        self.assertIn("kamxl web terminal", html)
+        self.assertIn("/terminal/exec", html)
+
+    def test_page_requires_auth_when_enabled(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/")
+        response = conn.getresponse()
+        response.read()
+
+        self.assertEqual(response.status, 401)
 
 
 class RoutingErrorTests(RestTestCase):

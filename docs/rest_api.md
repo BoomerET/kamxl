@@ -41,6 +41,14 @@ To skip auth entirely, pass `--no-auth` -- refused unless `--host` is
 also `127.0.0.1`, since running without auth while reachable from the
 whole LAN would defeat the point.
 
+Browser contexts that can't set a custom header -- `EventSource`
+(used by `/monitor/stream`), or just pasting a URL into the address
+bar to load the [web terminal](#web-terminal) -- can instead pass the
+same token as a query parameter: `?token=<token>`. Checked as a
+fallback only; the header is still preferred everywhere a client can
+set one, since a token in a URL is more likely to end up logged
+somewhere (browser history, server access logs) than one in a header.
+
 **Security note:** the token travels in cleartext over plain HTTP.
 That's an acceptable bar for a trusted home LAN, but this is *not*
 safe to expose over the open internet (e.g. via port forwarding)
@@ -78,6 +86,8 @@ call actually does.
 | POST | `/connected/send` | `{"text", "add_cr"?}` | Send while connected |
 | GET | `/connected/read?timeout=5` | | Read while connected |
 | GET | `/monitor/stream` | | Server-Sent Events, see below |
+| POST | `/terminal/exec` | `{"command", "timeout"?}` | Raw command passthrough, see [Web terminal](#web-terminal) |
+| GET | `/` | | Serves the web terminal page |
 
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
@@ -103,7 +113,7 @@ before assuming something's wrong.
 | --- | --- |
 | 200 | Success |
 | 400 | Malformed request (missing required field) |
-| 401 | Missing/invalid `Authorization` header |
+| 401 | Missing/invalid `Authorization` header (or `?token=` query parameter) |
 | 404 | No such endpoint |
 | 405 | Endpoint exists, wrong HTTP method |
 | 502 | Request reached the daemon, but the KAM-XL/daemon rejected or failed it (`error.type` is the underlying exception, e.g. `KAMConnectionError`, `KAMTimeoutError`, `KAMError`) |
@@ -145,15 +155,41 @@ silence to keep the connection alive through proxies -- `EventSource`
 clients can ignore these (they don't fire `onmessage`).
 
 **`EventSource` and auth:** the browser `EventSource` API can't set
-custom headers, so it can't send the bearer token this endpoint
-requires. Until milestone 4 (web terminal) adds a proper browser-side
-solution for this, test the stream with `curl` (which can set
-headers) or a Python client, not a bare `EventSource` -- noted here
-rather than left as a surprise.
+custom headers, so authenticate it with the `?token=` query parameter
+described under [Authentication](#authentication) instead:
+
+```javascript
+const source = new EventSource(
+    `http://kam-host:8080/monitor/stream?token=${token}`
+);
+```
 
 ```
 curl -N -H "Authorization: Bearer $TOKEN" http://kam-host:8080/monitor/stream
 ```
+
+## Web terminal
+
+`GET /` serves a single self-contained HTML page (no build step, no
+external dependency) with a terminal-like input box: type any raw
+Terminal Mode command (`VERSION`, `DISPLAY`, `BEACON`, `MHEARD`, ...)
+and see the KAM-XL's raw response, same as a serial terminal program
+would show. It POSTs to `/terminal/exec`, which passes the command
+straight through to `KAMXL.send_command()` -- no assumption about
+response shape, so it works for anything, not just commands
+`kamxl.py` has typed metadata for.
+
+```
+curl -H "Authorization: Bearer $TOKEN" \
+     -X POST -d '{"command": "VERSION"}' \
+     http://kam-host:8080/terminal/exec
+```
+
+Open it in a browser at `http://kam-host:8080/?token=<token>` -- the
+page reads `token` from its own URL and carries it forward on every
+request it makes (see the query-string auth fallback above). Without
+a valid token, `GET /` itself returns `401` just like any other
+endpoint when authentication is enabled.
 
 ## Testing
 
