@@ -25,6 +25,17 @@ defaults:
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.
 
+Logs connections, disconnections, and each request's outcome to the
+terminal by default (`INFO` level). Add `-v`/`--verbose` to also log
+individual packet broadcasts (`DEBUG` level) -- off by default since
+a busy MONITOR session could otherwise flood the terminal.
+
+```
+20:29:03 conn-5344: connected
+20:29:03 conn-5344: ping -> ok
+20:29:03 conn-5344: disconnected
+```
+
 ## Protocol
 
 Newline-delimited JSON over a Unix domain socket, in both directions.

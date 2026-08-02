@@ -37,6 +37,7 @@ why multi-device support isn't in scope yet.
 import argparse
 import dataclasses
 import json
+import logging
 import os
 import signal
 import socketserver
@@ -51,6 +52,16 @@ from packet import Packet, PacketParser
 
 
 DEFAULT_SOCKET_PATH = "/tmp/kamxl.sock"
+
+# Not configured here -- main() calls logging.basicConfig() so a real
+# daemon run prints activity to its terminal. A NullHandler is added
+# directly (rather than leaving this unconfigured) so importing this
+# as a library -- e.g. tests/test_daemon.py -- doesn't trigger the
+# logging module's "no handlers configured" fallback, which would
+# otherwise print WARNING-and-above messages (missing params, command
+# errors) straight to stderr during the offline test run.
+logger = logging.getLogger("kamxl_daemon")
+logger.addHandler(logging.NullHandler())
 
 
 class KAMDaemon:
@@ -244,6 +255,12 @@ class KAMDaemon:
         with self._subscribers_lock:
             subscribers = list(self._subscribers)
 
+        logger.debug(
+            "packet: %s -> %s (port %s) to %d subscriber(s)",
+            packet.source, packet.destination, packet.port,
+            len(subscribers)
+        )
+
         for handler in subscribers:
             handler.send_event(event)
 
@@ -324,6 +341,12 @@ class DaemonRequestHandler(socketserver.StreamRequestHandler):
         super().setup()
         self._write_lock = threading.Lock()
         self._subscribed = False
+        # Unix domain sockets don't have a meaningful client_address
+        # (it's typically empty) -- use the handling thread's id as a
+        # short, unique-enough label to tell concurrent connections
+        # apart in the log.
+        self._client_id = f"conn-{threading.get_ident() % 10000}"
+        logger.info("%s: connected", self._client_id)
 
     def handle(self) -> None:
         daemon: KAMDaemon = self.server.daemon_instance  # type: ignore[attr-defined]
@@ -361,12 +384,19 @@ class DaemonRequestHandler(socketserver.StreamRequestHandler):
 
                 result = daemon.dispatch(method, params)
 
+                logger.info("%s: %s -> ok", self._client_id, method)
+
                 self._send({
                     "id": request_id,
                     "ok": True,
                     "result": result,
                 })
             except KeyError as exc:
+                logger.warning(
+                    "%s: %s -> missing param %s",
+                    self._client_id, method, exc
+                )
+
                 self._send({
                     "id": request_id,
                     "ok": False,
@@ -376,6 +406,11 @@ class DaemonRequestHandler(socketserver.StreamRequestHandler):
                     },
                 })
             except Exception as exc:
+                logger.warning(
+                    "%s: %s -> %s: %s",
+                    self._client_id, method, type(exc).__name__, exc
+                )
+
                 self._send({
                     "id": request_id,
                     "ok": False,
@@ -390,6 +425,8 @@ class DaemonRequestHandler(socketserver.StreamRequestHandler):
 
         if self._subscribed:
             daemon.remove_subscriber(self)
+
+        logger.info("%s: disconnected", self._client_id)
 
         super().finish()
 
@@ -423,7 +460,18 @@ def main(argv: Optional[list] = None) -> None:
         default=os.environ.get("KAMXL_SOCKET", DEFAULT_SOCKET_PATH),
         help=f"Unix socket path to listen on (default: {DEFAULT_SOCKET_PATH})",
     )
+    parser.add_argument(
+        "-v", "--verbose",
+        action="store_true",
+        help="Also log individual packet broadcasts (DEBUG level)",
+    )
     args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.INFO,
+        format="%(asctime)s %(message)s",
+        datefmt="%H:%M:%S",
+    )
 
     kam = KAMXL(args.port)
     kam.connect()
@@ -431,13 +479,14 @@ def main(argv: Optional[list] = None) -> None:
     daemon = KAMDaemon(kam, args.socket)
 
     def _handle_signal(signum: int, frame: Any) -> None:
+        logger.info("Shutting down (signal %s)...", signum)
         daemon.shutdown()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
 
-    print(f"KAM-XL daemon: {args.port} -> {args.socket}")
+    logger.info("KAM-XL daemon: %s -> %s", args.port, args.socket)
 
     daemon.serve_forever()
 
