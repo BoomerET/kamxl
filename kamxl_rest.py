@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import secrets
+import select
 import signal
 import socket
 import threading
@@ -414,11 +415,30 @@ class DaemonClient:
                 )
 
             while True:
-                try:
-                    line = rfile.readline()
-                except socket.timeout:
+                # Wait for readability with select() rather than just
+                # calling readline() and catching socket.timeout.
+                # Real-hardware bug: once a timed-out read fires once
+                # on a socket.makefile() object, CPython's SocketIO
+                # sets a sticky _timeout_occurred flag -- every *later*
+                # read on that same file object then raises
+                # "OSError: cannot read from timed out object"
+                # immediately, instead of actually trying again. That
+                # silently killed this generator (and the SSE stream
+                # built on it) after the very first keepalive with no
+                # packets, observed live: the connection would run for
+                # exactly one ``self.timeout`` window, crash, and
+                # EventSource would reconnect and repeat -- meaning
+                # any packet arriving during the brief reconnect gap
+                # was lost. select() only calls readline() once data
+                # is actually known to be waiting, so the socket-level
+                # timeout path (and that sticky flag) is never hit.
+                ready, _, _ = select.select([sock], [], [], self.timeout)
+
+                if not ready:
                     yield None
                     continue
+
+                line = rfile.readline()
 
                 if not line:
                     return

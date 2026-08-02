@@ -154,6 +154,17 @@ Sends a `: keepalive` comment roughly every request timeout period of
 silence to keep the connection alive through proxies -- `EventSource`
 clients can ignore these (they don't fire `onmessage`).
 
+Internally, waiting for the next event uses `select.select()` rather
+than relying on the socket's own read timeout -- a real bug, found
+live on hardware: once a `socket.timeout` fires once on a
+`socket.makefile()` object, CPython sets a sticky flag that makes
+every *later* read on that same file object fail immediately with
+`OSError: cannot read from timed out object` instead of trying again.
+That silently killed the stream after the very first idle period
+(EventSource would then reconnect and repeat, discarding whatever
+packet arrived during the gap). `select()` only lets a read happen
+once data is actually waiting, so that path is never triggered.
+
 **`EventSource` and auth:** the browser `EventSource` API can't set
 custom headers, so authenticate it with the `?token=` query parameter
 described under [Authentication](#authentication) instead:

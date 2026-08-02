@@ -547,5 +547,108 @@ class DaemonClientTimeoutTests(unittest.TestCase):
         self.assertEqual(response["result"], "slow")
 
 
+class StreamEventsKeepaliveTests(unittest.TestCase):
+    """
+    Regression coverage for a real bug found live on hardware:
+    DaemonClient.stream_events() crashed with
+    "OSError: cannot read from timed out object" immediately after
+    the *first* keepalive timeout. CPython's socket.makefile() sets a
+    sticky _timeout_occurred flag the first time a read hits
+    socket.timeout -- every *later* read on that same file object
+    then fails immediately instead of actually trying again. Observed
+    as the SSE stream dying and EventSource silently reconnecting
+    every ~15s, discarding whatever packet happened to arrive during
+    the reconnect gap. Fixed with select.select()-based polling so
+    readline() only ever runs once data is already known to be
+    waiting, never hitting the socket-level timeout path at all.
+    """
+
+    def start_idle_daemon(self, event_after=None):
+        """
+        A minimal fake daemon: accepts one connection, acks the
+        subscribe request, then sends nothing else (simulating no
+        packets arriving) unless ``event_after`` (seconds) is given,
+        in which case it sends exactly one event after that delay and
+        then goes idle again.
+        """
+        tmp_dir = tempfile.mkdtemp()
+        socket_path = os.path.join(tmp_dir, "idle.sock")
+
+        server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server_sock.bind(socket_path)
+        server_sock.listen(1)
+        server_sock.settimeout(0.1)
+
+        stop = threading.Event()
+
+        def serve():
+            while not stop.is_set():
+                try:
+                    conn, _ = server_sock.accept()
+                except socket.timeout:
+                    continue
+
+                try:
+                    conn.recv(65536)  # the subscribe request; unused
+                    conn.sendall(
+                        (json.dumps({"id": "1", "ok": True}) + "\n")
+                        .encode("ascii")
+                    )
+
+                    if event_after is not None:
+                        time.sleep(event_after)
+                        conn.sendall(
+                            (json.dumps({
+                                "event": "packet",
+                                "data": {"source": "AI6K-4"},
+                            }) + "\n").encode("ascii")
+                        )
+
+                    while not stop.is_set():
+                        time.sleep(0.05)
+                finally:
+                    conn.close()
+
+        thread = threading.Thread(target=serve, daemon=True)
+        thread.start()
+
+        self.addCleanup(stop.set)
+        self.addCleanup(thread.join, 2)
+        self.addCleanup(server_sock.close)
+
+        return socket_path
+
+    def test_survives_multiple_keepalive_cycles(self):
+        # The old implementation crashed on the *second* read after
+        # the first timeout -- five clean Nones in a row proves it's
+        # not just surviving one cycle by luck.
+        socket_path = self.start_idle_daemon()
+        client = kamxl_rest.DaemonClient(socket_path, timeout=0.05)
+
+        events = client.stream_events("monitor.subscribe")
+
+        for _ in range(5):
+            self.assertIsNone(next(events))
+
+    def test_receives_event_after_keepalives(self):
+        # Mirrors the real usage pattern: idle for a while (nothing on
+        # the air yet), then a packet actually arrives.
+        socket_path = self.start_idle_daemon(event_after=0.2)
+        client = kamxl_rest.DaemonClient(socket_path, timeout=0.05)
+
+        events = client.stream_events("monitor.subscribe")
+
+        seen_event = None
+        for _ in range(20):
+            item = next(events)
+
+            if item is not None:
+                seen_event = item
+                break
+
+        self.assertIsNotNone(seen_event, "Never received the event")
+        self.assertEqual(seen_event["data"]["source"], "AI6K-4")
+
+
 if __name__ == "__main__":
     unittest.main()
