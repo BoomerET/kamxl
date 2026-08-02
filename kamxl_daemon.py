@@ -184,7 +184,10 @@ class KAMDaemon:
 
     def _m_disconnect_station(self, params: Dict[str, Any]) -> str:
         with self._kam_lock:
-            return self.kam.disconnect_station(params.get("timeout", 30))
+            return self.kam.disconnect_station(
+                params.get("timeout", 30),
+                command_mode_timeout=params.get("command_mode_timeout", 5)
+            )
 
     def _m_monitor_subscribe(self, params: Dict[str, Any]) -> None:
         # Actual subscriber-set membership is handled by the request

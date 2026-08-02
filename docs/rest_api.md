@@ -85,6 +85,11 @@ as JSON arrays: `{"value": [true, false]}`.
 `/connect`, `/disconnect`, and `/connected/read` accept a `timeout`
 (seconds) that's passed straight through to the underlying KAM-XL
 operation -- e.g. `{"timeout": 90}` for a slow digipeated connect.
+`/disconnect` also accepts `command_mode_timeout` (default `5`),
+which separately bounds the initial Ctrl-C step that returns to
+Command mode before the DISCONNECT itself is attempted -- the two run
+sequentially, so a slow/unresponsive Ctrl-C step won't be masked by a
+generous `timeout` on the DISCONNECT step alone.
 This layer automatically waits a bit longer than that on its own end
 (so it doesn't give up on you before the daemon could possibly have
 an answer); a `504` means even that extended wait wasn't enough,

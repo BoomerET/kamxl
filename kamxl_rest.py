@@ -442,11 +442,16 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
     def _h_disconnect(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         body = self._read_json_body()
         disconnect_timeout = body.get("timeout", 30)
+        command_mode_timeout = body.get("command_mode_timeout", 5)
 
         self._relay(
             "disconnect_station",
             timeout=disconnect_timeout,
-            _socket_timeout=disconnect_timeout + 5,
+            command_mode_timeout=command_mode_timeout,
+            # The Ctrl-C step and the DISCONNECT step run sequentially
+            # on the daemon side, so the worst case is their sum, not
+            # just the larger of the two.
+            _socket_timeout=disconnect_timeout + command_mode_timeout + 5,
         )
 
     def _h_send_connected(self, params: Dict[str, str], query: Dict[str, Any]) -> None:

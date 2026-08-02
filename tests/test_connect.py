@@ -1,6 +1,7 @@
+import time
 import unittest
 
-from fakes import CannedSerial, make_kam
+from fakes import CannedSerial, SilentSerial, make_kam
 
 from kamxl import (
     KAMConnectionError,
@@ -189,6 +190,29 @@ class DisconnectStationTests(unittest.TestCase):
 
         with self.assertRaises(KAMTimeoutError):
             kam.disconnect_station(timeout=0.1)
+
+    def test_command_mode_timeout_is_honored_independently(self):
+        # Regression test: enter_command_mode() used to always run with
+        # its own hardcoded 5s default inside disconnect_station(),
+        # completely ignoring whatever the caller passed -- so a
+        # caller-supplied command_mode_timeout has to actually bound
+        # *this* step, not the overall call, and a large `timeout`
+        # must not paper over a short command_mode_timeout.
+        kam = make_kam(SilentSerial())
+
+        start = time.monotonic()
+
+        with self.assertRaises(KAMTimeoutError) as ctx:
+            kam.disconnect_station(timeout=10, command_mode_timeout=0.1)
+
+        elapsed = time.monotonic() - start
+
+        self.assertIn("Command mode", str(ctx.exception))
+        self.assertLess(
+            elapsed, 2,
+            "disconnect_station() waited on the outer `timeout` "
+            "instead of the shorter command_mode_timeout"
+        )
 
 
 if __name__ == "__main__":

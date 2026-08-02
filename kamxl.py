@@ -1195,14 +1195,24 @@ class KAMXL:
 
     def disconnect_station(
         self,
-        timeout: float = 30
+        timeout: float = 30,
+        command_mode_timeout: float = 5
     ) -> str:
         """
         Return to Command mode and disconnect the current AX.25 link.
+
+        ``timeout`` bounds the DISCONNECT confirmation step;
+        ``command_mode_timeout`` separately bounds the initial Ctrl-C
+        step that gets back to Command mode first (previously always
+        hardcoded to enter_command_mode()'s own 5s default, regardless
+        of what a caller passed for ``timeout`` -- surprising, since
+        the two steps run sequentially and a caller asking for a more
+        patient disconnect overall would reasonably expect that to
+        cover both).
         """
         self._require_connection()
 
-        self.enter_command_mode()
+        self.enter_command_mode(timeout=command_mode_timeout)
 
         self._drain_input()
 
