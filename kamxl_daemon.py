@@ -249,6 +249,17 @@ class KAMDaemon:
                 text = self.kam.read_available()
 
             if text:
+                # Logged before parsing, unconditionally on any
+                # non-empty read -- not just for completed packets --
+                # so a line PacketParser's HEADER_RE doesn't recognize
+                # (e.g. the KAM-XL's own <C>/<UA>/<UI>-style control-
+                # packet annotations, on by default via MCOM/MRESP)
+                # is still visible with -v/--verbose, instead of
+                # silently vanishing with no way to tell "nothing
+                # arrived" apart from "something arrived but didn't
+                # parse".
+                logger.debug("monitor raw: %r", text)
+
                 for packet in parser.feed(text):
                     self._broadcast_packet(packet)
 

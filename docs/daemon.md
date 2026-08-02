@@ -19,16 +19,28 @@ defaults:
 
 | Flag | Env var | Default |
 | --- | --- | --- |
-| `--port` | `KAMXL_PORT` | `COM8` |
+| `--port` | `KAMXL_PORT` | *(required -- no fallback)* |
 | `--socket` | `KAMXL_SOCKET` | `/tmp/kamxl.sock` |
+
+`--port` has no hardcoded default on purpose: a wrong or missing
+serial device should fail immediately with a clear error, not
+silently try to open a port that isn't there and hang every
+subsequent command until its timeout (a real bug found the hard way
+-- see PROJECT.md's milestone 3 notes).
 
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.
 
 Logs connections, disconnections, and each request's outcome to the
 terminal by default (`INFO` level). Add `-v`/`--verbose` to also log
-individual packet broadcasts (`DEBUG` level) -- off by default since
-a busy MONITOR session could otherwise flood the terminal.
+individual packet broadcasts, and the raw text pulled off the wire
+before it's even parsed (`DEBUG` level) -- both off by default since
+a busy MONITOR session could otherwise flood the terminal. The raw
+line is useful for telling "nothing arrived" apart from "something
+arrived but didn't look like a packet header" -- e.g. the KAM-XL's
+own `<C>`/`<UA>`/`<UI>`-style control-packet annotations (shown by
+default via `MCOM`/`MRESP`), which `packet.py`'s `HEADER_RE` doesn't
+currently recognize and so won't produce a `packet` event.
 
 ```
 20:29:03 conn-5344: connected
