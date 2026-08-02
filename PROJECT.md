@@ -239,13 +239,22 @@ foundation -- Milestone 1 here. Direction as of now:
    self-contained page at `GET /pbbs` (list + click-to-read, linked
    from the terminal page's header and back).
 
-   **Not yet verified against real hardware** -- unlike everything
-   else in this project, `pbbs.py`'s parsing was built from the
-   manual's documented list/read output format, not a captured live
-   session, because getting to a real PBBS session wasn't practical
-   during this pass. Treat it as a first draft; expect the parser to
-   need the same kind of real-hardware correction `packet.py`'s
-   `HEADER_RE` needed after milestone 5. Offline coverage
+   **Partially verified against real hardware.** The empty-mailbox
+   case is now confirmed -- Dave's KAM-XL has PBBS enabled with no
+   messages, and `parse_message_list()` correctly returned `[]`
+   against the real raw text (added as `RealHardwareEmptyMailboxTests`
+   in `tests/test_pbbs.py`). That text also revealed two real
+   formatting details the manual didn't show -- the sign-on banner
+   reads `NNN BYTES AVAILABLE IN NN BLOCKS` (not the manual's plain
+   `NNN BYTES AVAILABLE`), and an empty mailbox prints
+   `THERE ARE NO MESSAGES` -- neither needed a parser change, since
+   `parse_message_list()` already skips any line that doesn't look
+   like a numbered message row (worked correctly by design, not
+   luck). The populated-list-row format and message-read format are
+   still unverified -- that needs an actual message in the mailbox to
+   test, which hasn't happened yet. Treat those two as a first draft;
+   expect them to need the same kind of real-hardware correction
+   `packet.py`'s `HEADER_RE` needed after milestone 5. Offline coverage
    (`tests/test_pbbs.py`, plus daemon/REST tests) uses the manual's
    own example lines as fixtures and stubs the connected-mode
    primitives directly for the call-order/argument-flow/error-handling

@@ -2,12 +2,23 @@
 Offline tests for pbbs.py's parsing and KAMXL's list_pbbs_messages()/
 read_pbbs_message() methods.
 
-IMPORTANT: unlike most fixtures in this suite, these are NOT taken
-from a captured real-hardware session (see pbbs.py's module
-docstring) -- they're built from the manual's documented output
-format. This is a best-effort first draft; expect it to need
-adjustment once actually tested against a real KAM-XL PBBS session,
-the same way packet.py's HEADER_RE did.
+IMPORTANT: most fixtures here are NOT taken from a captured
+real-hardware session (see pbbs.py's module docstring) -- they're
+built from the manual's documented output format, a best-effort first
+draft pending further real testing, the same way packet.py's
+HEADER_RE needed adjustment after milestone 5.
+
+The one exception: RealHardwareEmptyMailboxTests, added after Dave
+tested this live -- the empty-mailbox case is now confirmed. It also
+revealed two real formatting details the manual didn't show: the PBBS
+sign-on banner reads "NNN BYTES AVAILABLE IN NN BLOCKS" (not the
+plain "NNN BYTES AVAILABLE" the manual's own LIST-with-messages
+example showed), and an empty mailbox prints "THERE ARE NO MESSAGES".
+Neither needed a parser change -- parse_message_list() already
+skips any line that doesn't look like a numbered message row, which
+handled both correctly the first time, by design rather than luck.
+The populated-list-row and message-read formats are still unverified
+-- that needs an actual message in the mailbox to test.
 """
 
 import unittest
@@ -84,6 +95,32 @@ class ParseMessageListTests(unittest.TestCase):
         )
 
         self.assertEqual(parse_message_list(text), [])
+
+
+class RealHardwareEmptyMailboxTests(unittest.TestCase):
+    """
+    Verbatim raw text captured from Dave's daemon log (-v) connecting
+    to a real KAM-XL's empty PBBS -- see this file's module
+    docstring. Includes the leading command echo ("L") and the
+    prompt appearing twice (the sign-on's own prompt immediately
+    followed by the post-"L" prompt -- "L" apparently reached the
+    PBBS before its sign-on banner had finished, an artifact of
+    connect_station() returning as soon as the AX.25-level "***
+    CONNECTED" banner arrives, before the PBBS software has
+    necessarily started sending its own banner text yet).
+    """
+
+    RAW_TEXT = (
+        "L\r\n"
+        "[KAM-XL-1.0-HM$]\r\n"
+        "102200 BYTES AVAILABLE IN 25 BLOCKS\r\n"
+        "THERE ARE NO MESSAGES\r\n"
+        "ENTER COMMAND:  B,J,K,L,R,S, or Help >\r\n"
+        "ENTER COMMAND:  B,J,K,L,R,S, or Help >\r\n"
+    )
+
+    def test_empty_mailbox_parses_to_no_messages(self):
+        self.assertEqual(parse_message_list(self.RAW_TEXT), [])
 
 
 class ParseMessageTests(unittest.TestCase):
