@@ -1,3 +1,4 @@
+import logging
 import re
 import serial
 import time
@@ -7,6 +8,14 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from packet import Packet, PacketParser
 from pbbs import PBBSMessage, PBBSMessageSummary, parse_message, parse_message_list
+
+
+# Library code stays silent by default (NullHandler) -- an app like
+# kamxl_daemon.py that configures logging (its -v/--verbose) picks
+# this up automatically, since logging.basicConfig() applies to every
+# logger, not just the one it names.
+logger = logging.getLogger("kamxl")
+logger.addHandler(logging.NullHandler())
 
 
 # ---------------------------------------------------------------------------
@@ -1276,6 +1285,15 @@ class KAMXL:
         finally:
             self.disconnect_station()
 
+        # parse_message_list() silently skips lines it doesn't
+        # recognize -- by design, so a real-hardware format surprise
+        # degrades gracefully instead of raising. The tradeoff: a
+        # genuinely empty mailbox and a total parsing mismatch both
+        # come back as an empty list, indistinguishable from the
+        # return value alone. Logging the raw text here is what makes
+        # them distinguishable, for anyone running with -v.
+        logger.debug("pbbs list raw: %r", text)
+
         return parse_message_list(text)
 
     def read_pbbs_message(
@@ -1302,5 +1320,7 @@ class KAMXL:
             text = self.read_connected(timeout=read_timeout)
         finally:
             self.disconnect_station()
+
+        logger.debug("pbbs read raw: %r", text)
 
         return parse_message(text)
