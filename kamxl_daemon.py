@@ -457,8 +457,15 @@ def main(argv: Optional[list] = None) -> None:
     )
     parser.add_argument(
         "--port",
-        default=os.environ.get("KAMXL_PORT", "COM8"),
-        help="Serial port the KAM-XL is on (default: $KAMXL_PORT or COM8)",
+        default=os.environ.get("KAMXL_PORT"),
+        required=os.environ.get("KAMXL_PORT") is None,
+        help=(
+            "Serial port the KAM-XL is on, e.g. /dev/ttyUSB0 or COM8 "
+            "(default: $KAMXL_PORT; required if that's unset). No "
+            "hardcoded fallback -- a wrong/missing port should fail "
+            "fast, not silently try to open a device that isn't there "
+            "and hang every subsequent command until its timeout."
+        ),
     )
     parser.add_argument(
         "--socket",
