@@ -288,7 +288,13 @@ class KAMDaemon:
         self._server.daemon_instance = self  # type: ignore[attr-defined]
 
         try:
-            self._server.serve_forever()
+            # socketserver's default poll_interval (0.5s) is how often
+            # serve_forever()'s loop wakes up to check for a pending
+            # shutdown() -- a tighter interval makes shutdown() (and
+            # therefore every test that spins this daemon up and back
+            # down) noticeably more responsive, at a negligible idle
+            # CPU cost.
+            self._server.serve_forever(poll_interval=0.1)
         finally:
             self.shutdown()
 

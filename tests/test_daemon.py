@@ -104,8 +104,13 @@ class DaemonTestCase(unittest.TestCase):
         ):
             time.sleep(0.01)
 
-        self.addCleanup(daemon.shutdown)
+        # addCleanup runs LIFO -- register thread.join() *before*
+        # shutdown() so shutdown() (which unblocks serve_forever()'s
+        # loop) actually runs first. Registered the other way around,
+        # join(timeout) just burns its whole timeout waiting on a
+        # thread nothing has told to stop yet.
         self.addCleanup(thread.join, 2)
+        self.addCleanup(daemon.shutdown)
 
         return daemon, socket_path
 

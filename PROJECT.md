@@ -24,7 +24,32 @@ foundation -- Milestone 1 here. Direction as of now:
    sandbox this was built in); worth a hardware smoke test before
    relying on it. Single KAM-XL / serial port per daemon instance;
    multi-device support isn't in scope yet.
-3. **REST API** exposing the daemon's capabilities over HTTP.
+3. **REST API** exposing the daemon's capabilities over HTTP -- done.
+   `kamxl_rest.py`: stdlib `http.server` only (no new dependency),
+   proxies HTTP requests to the daemon's Unix socket and translates
+   its JSON protocol into REST responses (see
+   [docs/rest_api.md](docs/rest_api.md) for the endpoint list).
+   Binds `0.0.0.0` by default (LAN-accessible, per Dave's choice),
+   which meant it needed authentication before that was safe -- a
+   bearer token, generated and printed at startup if not supplied,
+   checked on every request; `--no-auth` is refused unless bound to
+   localhost only. Live monitoring exposed as Server-Sent Events
+   (`/monitor/stream`) rather than websockets, so a plain HTTP client
+   (or eventually milestone 4's web terminal) can consume it directly
+   -- though browser `EventSource` can't set the Authorization header
+   this needs, so real browser support for that specifically waits on
+   milestone 4. Covered by `tests/test_rest.py`, the same
+   fakes-underneath/real-sockets-on-top approach as the daemon's own
+   tests. Along the way, found and fixed a real bug in the *test
+   harness itself* (not the daemon or REST code): `addCleanup`'s LIFO
+   ordering meant `thread.join(2)` was firing before the matching
+   `shutdown()` in both `test_daemon.py` and `test_rest.py`, silently
+   wasting up to 2 seconds per test on a join that couldn't succeed
+   yet -- fixing the registration order (plus tightening
+   `serve_forever()`'s default poll interval from 0.5s to 0.1s) took
+   the full offline suite from ~35s for 54 tests down to ~7.5s for 74.
+   Same hardware caveat as the daemon: not yet run against a real
+   KAM-XL end-to-end.
 4. **Web terminal** -- browser-based Terminal Mode session.
 5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
    in real time.
