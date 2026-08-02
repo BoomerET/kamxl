@@ -137,7 +137,24 @@ foundation -- Milestone 1 here. Direction as of now:
    `TerminalTests` plus new query-string-token auth tests in
    `tests/test_rest.py`.
 5. **Live packet monitor** -- browser view of `kam.monitor()` traffic
-   in real time.
+   in real time -- done. Added to the *same* page as the web terminal
+   (per Dave's call -- one URL, one token, rather than a separate
+   route) as a scrolling feed pane above the command box: time, port,
+   source -> destination (with any digipeat path), payload, driven by
+   an `EventSource` against the `/monitor/stream` endpoint milestone
+   3 already built. This is what the query-string `?token=` auth
+   fallback added in milestone 4 was actually for -- no further
+   backend auth work was needed to wire it up, as expected. A status
+   indicator reflects `live` vs `reconnecting...` (`EventSource`
+   retries on its own). Doesn't turn `MONITOR` on for you -- the page
+   just displays whatever's already flowing, same as the daemon's
+   monitor thread always has; documented in
+   [docs/rest_api.md](docs/rest_api.md) so an empty feed isn't a
+   surprise. Covered by new `test_page_served_at_root` assertions and
+   `test_stream_accepts_query_string_token` in `tests/test_rest.py`
+   (real SSE response, query-string auth specifically -- the actual
+   in-browser rendering isn't unit-testable offline, same limitation
+   as the terminal page's JS).
 6. **BBS with a modern web UI**.
 7. **APRS mapping and station database**.
 8. **Plugins for Wavelog, Winlink, and Home Assistant**.

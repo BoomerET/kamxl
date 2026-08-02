@@ -171,13 +171,27 @@ curl -N -H "Authorization: Bearer $TOKEN" http://kam-host:8080/monitor/stream
 ## Web terminal
 
 `GET /` serves a single self-contained HTML page (no build step, no
-external dependency) with a terminal-like input box: type any raw
-Terminal Mode command (`VERSION`, `DISPLAY`, `BEACON`, `MHEARD`, ...)
-and see the KAM-XL's raw response, same as a serial terminal program
-would show. It POSTs to `/terminal/exec`, which passes the command
-straight through to `KAMXL.send_command()` -- no assumption about
-response shape, so it works for anything, not just commands
-`kamxl.py` has typed metadata for.
+external dependency) with two panes: a live packet monitor on top, a
+terminal-like command box below.
+
+The terminal pane: type any raw Terminal Mode command (`VERSION`,
+`DISPLAY`, `BEACON`, `MHEARD`, ...) and see the KAM-XL's raw
+response, same as a serial terminal program would show. It POSTs to
+`/terminal/exec`, which passes the command straight through to
+`KAMXL.send_command()` -- no assumption about response shape, so it
+works for anything, not just commands `kamxl.py` has typed metadata
+for.
+
+The monitor pane (milestone 5): connects to `/monitor/stream` via
+`EventSource` and prints each packet as it arrives -- time,
+port, source -> destination (with any digipeat path), payload. A
+status indicator (`live` / `reconnecting...`) reflects the
+connection state; `EventSource` reconnects on its own if the
+connection drops. This only shows traffic if `MONITOR` is actually
+`ON` for the relevant port(s) on the KAM-XL -- the page doesn't
+enable it for you, so if the feed stays empty, type
+`MONITOR ON ON` (or similar for your ports) into the terminal pane
+first, or `PUT /params/MONITOR`.
 
 ```
 curl -H "Authorization: Bearer $TOKEN" \

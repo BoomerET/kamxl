@@ -48,13 +48,14 @@ DEFAULT_PORT = 8080
 # a malformed request, which is a client-side (4xx) problem.
 _DAEMON_ERROR_STATUS = 502
 
-# Milestone 4: a single self-contained page (no build step, no CDN
-# dependency) served directly by this process at GET / -- type a raw
-# Terminal Mode command, see the raw response, same as a serial
-# terminal program would show. Reads ?token=... from its own URL and
-# carries it forward on every request it makes, since that's the
-# auth mechanism this REST layer accepts specifically so a browser
-# context (which can't always set a custom header) can use it.
+# Milestone 4 (terminal) + milestone 5 (live monitor): a single
+# self-contained page (no build step, no CDN dependency) served
+# directly by this process at GET / -- a live packet feed on top
+# (EventSource against /monitor/stream), a raw Terminal Mode command
+# box below it (same as milestone 4). Reads ?token=... from its own
+# URL and carries it forward on every request it makes, since that's
+# the auth mechanism this REST layer accepts specifically so a
+# browser context (which can't always set a custom header) can use.
 TERMINAL_HTML = """<!doctype html>
 <html>
 <head>
@@ -68,18 +69,71 @@ TERMINAL_HTML = """<!doctype html>
     color: #d4f7d4;
     font-family: "Courier New", Courier, monospace;
   }
+  body {
+    display: flex;
+    flex-direction: column;
+  }
+  .paneHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: #101617;
+    border-bottom: 1px solid #234;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    color: #888;
+    box-sizing: border-box;
+  }
+  .paneHeader button {
+    background: none;
+    border: 1px solid #345;
+    color: #9c9;
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+  }
+  .paneHeader button:hover { border-color: #5a8; color: #cfc; }
+  #monitorStatus.live::before { content: "\\25CF "; color: #6f6; }
+  #monitorStatus.connecting::before { content: "\\25CB "; color: #cc6; }
+  #monitorStatus.down::before { content: "\\2715 "; color: #f66; }
+  #monitorPane {
+    flex: 1 1 40%;
+    min-height: 80px;
+    display: flex;
+    flex-direction: column;
+    border-bottom: 2px solid #234;
+  }
+  #monitorFeed {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    font-size: 13px;
+  }
+  #monitorFeed div { padding: 1px 0; }
+  .pktTime { color: #567; }
+  .pktRoute { color: #6cf; }
+  #terminalPane {
+    flex: 1 1 60%;
+    display: flex;
+    flex-direction: column;
+    min-height: 120px;
+  }
   #output {
-    height: calc(100% - 48px);
+    flex: 1;
     overflow-y: auto;
     padding: 12px;
     white-space: pre-wrap;
     word-break: break-word;
-    box-sizing: border-box;
     font-size: 14px;
   }
   #inputRow {
     display: flex;
     height: 48px;
+    flex: 0 0 48px;
     border-top: 1px solid #234;
     box-sizing: border-box;
   }
@@ -104,11 +158,21 @@ TERMINAL_HTML = """<!doctype html>
 </style>
 </head>
 <body>
-<div id="output"></div>
-<div id="inputRow">
-  <div id="prompt">cmd:</div>
-  <input id="cmdInput" autocomplete="off" autofocus
-         placeholder="type a KAM-XL command and press Enter..." />
+<div id="monitorPane">
+  <div class="paneHeader">
+    <span>LIVE MONITOR <span id="monitorStatus" class="connecting">connecting</span></span>
+    <button id="clearMonitor" type="button">clear</button>
+  </div>
+  <div id="monitorFeed"></div>
+</div>
+<div id="terminalPane">
+  <div class="paneHeader"><span>TERMINAL</span></div>
+  <div id="output"></div>
+  <div id="inputRow">
+    <div id="prompt">cmd:</div>
+    <input id="cmdInput" autocomplete="off" autofocus
+           placeholder="type a KAM-XL command and press Enter..." />
+  </div>
 </div>
 <script>
 (function () {
@@ -116,6 +180,8 @@ TERMINAL_HTML = """<!doctype html>
   var token = params.get("token") || "";
   var output = document.getElementById("output");
   var input = document.getElementById("cmdInput");
+  var monitorFeed = document.getElementById("monitorFeed");
+  var monitorStatus = document.getElementById("monitorStatus");
 
   function authedUrl(path) {
     if (!token) return path;
@@ -172,6 +238,71 @@ TERMINAL_HTML = """<!doctype html>
 
   log("kamxl web terminal -- type a command (e.g. VERSION, DISPLAY, MYCALL) and press Enter.");
   input.focus();
+
+  // -- Live monitor (milestone 5) ------------------------------------
+  //
+  // Packets only actually flow if MONITOR is ON for the relevant
+  // port(s) on the KAM-XL itself -- this page doesn't turn it on for
+  // you. Type e.g. "MONITOR ON ON" in the terminal above, or use
+  // PUT /params/MONITOR, if the feed stays empty.
+
+  function setStatus(state, text) {
+    monitorStatus.className = state;
+    monitorStatus.textContent = text;
+  }
+
+  function logPacket(evt) {
+    var p = evt.data;
+    var time = new Date().toLocaleTimeString();
+    var route = p.source + " -> " + p.destination;
+
+    if (p.digipeaters && p.digipeaters.length) {
+      route += " via " + p.digipeaters.join(",");
+    }
+
+    var line = document.createElement("div");
+
+    var timeSpan = document.createElement("span");
+    timeSpan.className = "pktTime";
+    timeSpan.textContent = time + "  ";
+
+    var routeSpan = document.createElement("span");
+    routeSpan.className = "pktRoute";
+    routeSpan.textContent = "[port " + p.port + "] " + route + ": ";
+
+    line.appendChild(timeSpan);
+    line.appendChild(routeSpan);
+    line.appendChild(document.createTextNode(p.payload || ""));
+
+    monitorFeed.appendChild(line);
+    monitorFeed.scrollTop = monitorFeed.scrollHeight;
+  }
+
+  document.getElementById("clearMonitor").addEventListener("click", function () {
+    monitorFeed.innerHTML = "";
+  });
+
+  if (typeof EventSource !== "undefined") {
+    var source = new EventSource(authedUrl("/monitor/stream"));
+
+    source.onopen = function () { setStatus("live", "live"); };
+    source.onerror = function () { setStatus("down", "reconnecting..."); };
+
+    source.onmessage = function (e) {
+      setStatus("live", "live");
+
+      var evt;
+      try {
+        evt = JSON.parse(e.data);
+      } catch (err) {
+        return;
+      }
+
+      if (evt.event === "packet") logPacket(evt);
+    };
+  } else {
+    setStatus("down", "unsupported");
+  }
 })();
 </script>
 </body>

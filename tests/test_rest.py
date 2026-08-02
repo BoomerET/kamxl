@@ -370,6 +370,10 @@ class TerminalTests(RestTestCase):
         )
         self.assertIn("kamxl web terminal", html)
         self.assertIn("/terminal/exec", html)
+        # Milestone 5: the live monitor pane, driven by an EventSource
+        # against /monitor/stream, lives on the same page.
+        self.assertIn("/monitor/stream", html)
+        self.assertIn("monitorFeed", html)
 
     def test_page_requires_auth_when_enabled(self):
         _, port = self.start_stack(ScriptedSerial({}))
@@ -451,6 +455,23 @@ class MonitorStreamTests(RestTestCase):
         self.assertEqual(event["event"], "packet")
         self.assertEqual(event["data"]["source"], "KD5EOC-10")
         self.assertEqual(event["data"]["destination"], "BEACON")
+
+    def test_stream_accepts_query_string_token(self):
+        # The web terminal's live monitor pane (milestone 5) connects
+        # via EventSource, which can't set an Authorization header --
+        # it relies entirely on this fallback.
+        _, port = self.start_stack(ChunkSerial([]))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/monitor/stream?token=test-token")
+        response = conn.getresponse()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("Content-Type"), "text/event-stream"
+        )
 
 
 class DaemonClientTimeoutTests(unittest.TestCase):
