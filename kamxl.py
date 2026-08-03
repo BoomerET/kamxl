@@ -1533,11 +1533,12 @@ class KAMXL:
 
         Raises ``KAMConnectionError`` if the gateway hangs up on us
         mid-exchange (detected via the KAM-XL's own "*** DISCONNECTED"
-        banner -- see winlink.parse_disconnect_reason()'s docstring
-        for the real case this was built from: a gateway that requires
-        B2 protocol support and disconnects rather than falling back
-        to plain ASCII for a client, like this one, that never claims
-        "B"/"B1"/"B2" in its own SID).
+        banner -- see winlink.parse_disconnect_reason()'s docstring).
+        The exception message quotes whatever reason the gateway gave,
+        verbatim -- see winlink.py's module docstring's "KNOWN
+        DISCONNECT REASONS" note for the real ones found so far; more
+        than one unrelated cause has already turned up in testing, so
+        this deliberately doesn't guess which applies.
         """
         if mycall is None:
             # MYCALL can be a multi-port value like "AI6K-10/AI6K-10"
@@ -1568,12 +1569,25 @@ class KAMXL:
 
             detail = f" (\"{reason}\")" if reason else ""
 
+            # Deliberately doesn't guess WHY the gateway hung up in the
+            # message text below -- it used to always claim "this can
+            # happen if the gateway requires B2 protocol support,"
+            # which was accurate for the first real disconnect this was
+            # built from (KD5EOC-10 demanding B2) but went stale and
+            # actively misleading the moment a second, unrelated real
+            # disconnect reason showed up in testing ("Unknown client
+            # types are not allowed on production servers -- use
+            # cms-z.winlink.org", i.e. the production CMS rejecting
+            # this client's own identification, nothing to do with B2
+            # at all -- see winlink.py's module docstring's "KNOWN
+            # DISCONNECT REASONS" note). The gateway's own stated
+            # reason is already quoted verbatim below -- that's more
+            # trustworthy than any canned guess this code could add.
             raise KAMConnectionError(
                 f"{gateway} disconnected before completing the "
-                f"Winlink exchange{detail} -- this can happen if the "
-                f"gateway requires B2 protocol support, which this "
-                f"module doesn't implement (see winlink.py's module "
-                f"docstring for the scope this was built to)."
+                f"Winlink exchange{detail}. See winlink.py's module "
+                f"docstring for known real-world reasons this has "
+                f"happened before."
             )
 
         try:

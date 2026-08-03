@@ -228,6 +228,29 @@ story. That was the prompt for implementing real B2 support (above) --
 `check_winlink_mail()` can now actually retrieve mail from a gateway
 that enforces B2, rather than only being able to name why it couldn't.
 
+A third real-hardware test against the same gateway surfaced a
+different disconnect entirely, unrelated to B2: with B2 now claimed,
+the SID exchange, secure login, and B2 proposal negotiation all
+succeeded, but the gateway then printed `*** Unknown client types are
+not allowed on production servers -- use cms-z.winlink.org -
+Disconnecting` and dropped the link. This is the production Winlink
+CMS rejecting this module's own client identification (most likely
+the `kamxl` app name in its SID) rather than a protocol defect --
+nothing about the wire exchange was wrong. Because the earlier fix's
+`KAMConnectionError` message used to hard-code "this can happen if the
+gateway requires B2 protocol support" as the explanation, it went
+stale and actively misleading the moment this second, unrelated cause
+showed up. The message no longer guesses a cause -- it quotes the
+gateway's own stated reason verbatim and points to
+`winlink.py`'s module docstring's "KNOWN DISCONNECT REASONS" section,
+which now lists both real causes found so far. This is not something
+`check_winlink_mail()` can fix on its own: it's a registration/
+gatekeeping policy on Winlink's production infrastructure, not a bug
+in this module. See `winlink.py`'s module docstring for the full
+writeup, including why spoofing a different, already-recognized
+client's identity to bypass this was considered and deliberately
+rejected.
+
 **Still unverified: real end-to-end interop with a real gateway's own
 B2-compressed bytes.** `lzhuf.py`'s codec is cross-checked against two
 independent reference implementations and round-trips its own

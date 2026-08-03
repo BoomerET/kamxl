@@ -692,6 +692,55 @@ foundation -- Milestone 1 here. Direction as of now:
    which hasn't happened yet. Expect the same kind of correction this
    project's other first-drafts needed once tested for real.
 
+   ### Update: third real disconnect cause found -- not a code bug
+
+   A follow-up live test against KD5EOC-10, now with B2 claimed,
+   completed the SID exchange, secure login, and B2 proposal
+   negotiation successfully (confirming the B2 work above is functioning
+   correctly) but then hit a third, different disconnect:
+
+   ```
+   *** Unknown client types are not allowed on production servers --
+   use cms-z.winlink.org - Disconnecting (47.190.139.106)
+   ```
+
+   This is the production Winlink CMS (which KD5EOC-10 proxies sessions
+   to) rejecting this module's own client identification -- most likely
+   the `kamxl` app name in its SID/`;FW:` line -- against production,
+   and pointing at `cms-z.winlink.org` as an apparent separate test/dev
+   CMS instance for unrecognized client software. Nothing about the
+   wire protocol was wrong here; this is a registration/gatekeeping
+   policy on Winlink's infrastructure, unrelated to B2 or to anything
+   `check_winlink_mail()` can fix by changing how it parses or frames
+   data.
+
+   The one real bug this surfaced: `check_winlink_mail()`'s
+   `KAMConnectionError` used to hard-code "this can happen if the
+   gateway requires B2 protocol support" as the explanation for any
+   mid-exchange disconnect. That was accurate for the *first* real
+   disconnect this project hit (B2-required), but became actively
+   misleading the moment this second, unrelated cause showed up --
+   especially since B2 is now claimed and clearly wasn't the issue this
+   time. Fixed: the message no longer guesses a cause. It quotes the
+   gateway's own stated reason verbatim (as it already did) and points
+   to `winlink.py`'s module docstring, which now has a "KNOWN DISCONNECT
+   REASONS" section listing both real causes found in testing so far,
+   explicit about which ones code can fix (B2 support) and which one it
+   can't (production client-registration gatekeeping).
+
+   Deliberately NOT done here: making this module's SID claim to be a
+   different, already-recognized Winlink client to slip past the
+   production check. That would be impersonation, not a fix, and is a
+   judgment call for Dave to make (e.g. contacting the Winlink
+   Development Team about registering `kamxl`, or finding out whether
+   `cms-z.winlink.org` is reachable/relevant for AX.25 packet testing as
+   opposed to telnet-based client testing) rather than something to
+   silently code around.
+
+   238/238 tests still passing (no regressions from the message-text
+   change). No commit-side change to protocol behavior -- this update
+   is entirely about not misreporting *why* a real disconnect happened.
+
 ---
 
 

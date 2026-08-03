@@ -122,6 +122,37 @@ pbbs.py's parsing both needed after their own first real tests. The
 LZHUF codec itself (lzhuf.py) is cross-checked against two independent
 reference implementations, but real end-to-end interop with a real
 gateway's own B2-compressed bytes hasn't been confirmed yet either.
+
+KNOWN DISCONNECT REASONS (real ones seen so far against KD5EOC-10 --
+kept here, not baked into check_winlink_mail()'s exception message,
+since guessing which one applies has already gone stale once):
+
+  1. "*** [3] Use B2 protocol - Disconnecting" -- the gateway requires
+     B2 and won't fall back to ASCII. This is what prompted adding B2
+     support (above), so this specific reason shouldn't recur now that
+     this module's SID claims B2.
+  2. "*** Unknown client types are not allowed on production servers
+     -- use cms-z.winlink.org - Disconnecting" -- seen AFTER this
+     module started claiming B2 and completing the SID exchange and
+     secure login successfully, so this is a different, unrelated
+     cause: the production Winlink CMS (which KD5EOC-10 proxies
+     sessions to -- note the earlier handshake banner's own "CMS via
+     KD5EOC" line) appears to validate the connecting client's
+     identity (most likely this module's own app name, "kamxl", in
+     its SID/;FW: line) against a list of recognized client software,
+     and rejects anything it doesn't recognize on its PRODUCTION
+     system -- pointing instead at "cms-z.winlink.org", which appears
+     to be a separate test/development CMS instance for exactly this
+     situation (new, not-yet-recognized client software). This is NOT
+     a protocol bug in this module -- the handshake and secure login
+     both completed correctly first -- and it's NOT something this
+     module can code its way around: it's a real gatekeeping/policy
+     decision on Winlink's infrastructure, not a wire-format detail.
+     Resolving it (if it needs resolving) is a question for the
+     Winlink Development Team or for however "cms-z" testing is
+     actually meant to be reached, not a code change here -- this
+     module deliberately does NOT attempt to spoof a different,
+     already-recognized client's identity to work around this.
 """
 
 import hashlib

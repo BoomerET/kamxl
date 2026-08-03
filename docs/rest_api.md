@@ -370,6 +370,22 @@ own B2-compressed bytes remains unverified -- that needs an account
 with actual mail waiting on a B2-enforcing gateway, which hasn't
 happened yet.
 
+**A third real-hardware test surfaced a disconnect unrelated to B2.**
+With B2 now claimed, a live test against KD5EOC-10 completed the SID
+exchange, secure login, and B2 proposal negotiation successfully, then
+the gateway printed `*** Unknown client types are not allowed on
+production servers -- use cms-z.winlink.org - Disconnecting` and
+dropped the link -- the production Winlink CMS rejecting this
+module's own client identification, not a protocol bug. The
+`KAMConnectionError` this raises used to guess "this can happen if the
+gateway requires B2 protocol support," which went stale and misleading
+the moment this unrelated cause turned up; it now just quotes the
+gateway's own reason verbatim rather than guessing. This is a
+registration/gatekeeping policy issue on Winlink's infrastructure, not
+something `check_winlink_mail()` can resolve by itself -- see
+`winlink.py`'s module docstring's "KNOWN DISCONNECT REASONS" section
+for the full writeup of both real causes found so far.
+
 ## Testing
 
 `tests/test_rest.py` runs a real `KAMDaemon` (wired to the same
