@@ -52,6 +52,7 @@ from stations import StationTracker
 
 
 DEFAULT_SOCKET_PATH = "/tmp/kamxl.sock"
+DEFAULT_BAUDRATE = 19200  # matches KAMXL's own constructor default
 
 # Not configured here -- main() calls logging.basicConfig() so a real
 # daemon run prints activity to its terminal. A NullHandler is added
@@ -576,6 +577,24 @@ def main(argv: Optional[list] = None) -> None:
         help=f"Unix socket path to listen on (default: {DEFAULT_SOCKET_PATH})",
     )
     parser.add_argument(
+        "--baud",
+        type=int,
+        default=int(os.environ.get("KAMXL_BAUD", DEFAULT_BAUDRATE)),
+        help=(
+            f"Host serial baud rate (default: $KAMXL_BAUD, or "
+            f"{DEFAULT_BAUDRATE} if that's unset -- must match the "
+            f"KAM-XL's own HBAUD setting. Found the hard way: a "
+            f"firmware flash can leave the KAM-XL at a different host "
+            f"baud rate than before (e.g. 38400 instead of the usual "
+            f"19200), and there was previously no way to tell this "
+            f"daemon about that without editing code -- every command "
+            f"would just silently time out instead of failing fast "
+            f"with a clear mismatch. Check with a plain serial terminal "
+            f"(e.g. minicom) if unsure what the KAM-XL is actually set "
+            f"to right now."
+        ),
+    )
+    parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Also log individual packet broadcasts (DEBUG level)",
@@ -588,7 +607,7 @@ def main(argv: Optional[list] = None) -> None:
         datefmt="%H:%M:%S",
     )
 
-    kam = KAMXL(args.port)
+    kam = KAMXL(args.port, baudrate=args.baud)
     kam.connect()
 
     daemon = KAMDaemon(kam, args.socket)

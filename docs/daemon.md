@@ -21,12 +21,22 @@ defaults:
 | --- | --- | --- |
 | `--port` | `KAMXL_PORT` | *(required -- no fallback)* |
 | `--socket` | `KAMXL_SOCKET` | `/tmp/kamxl.sock` |
+| `--baud` | `KAMXL_BAUD` | `19200` |
 
 `--port` has no hardcoded default on purpose: a wrong or missing
 serial device should fail immediately with a clear error, not
 silently try to open a port that isn't there and hang every
 subsequent command until its timeout (a real bug found the hard way
 -- see PROJECT.md's milestone 3 notes).
+
+`--baud` must match the KAM-XL's own host baud rate (`HBAUD`) or
+every command will time out instead of failing fast with a clear
+mismatch error -- another real gap found the hard way: a firmware
+flash can leave the KAM-XL at a different host baud than before (e.g.
+38400 instead of the usual 19200), and this daemon previously had no
+way to be told about that short of editing code. If unsure what the
+KAM-XL is actually set to right now, check with a plain serial
+terminal (e.g. `minicom`) first.
 
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.
