@@ -128,6 +128,7 @@ omitted to use their default.
 | `pbbs.read_message` | `number`, `mypbbs`/`connect_timeout`/`read_timeout` (all optional, same as above) -- connect/`R n`/disconnect; returns a `PBBSMessage` dict, or `null` if the number didn't resolve to a message |
 | `stations.list` | *(none, milestone 7)* -- returns every known `Station` (see `stations.py`) as a list of dicts, sorted by callsign. Built passively by the always-on monitor thread decoding APRS position reports -- no `monitor.subscribe` needed. |
 | `stations.get` | `callsign` -- one `Station` dict, or `null` if never heard |
+| `winlink.check_mail` | `gateway`, `password`, `mycall` (optional), `connect_timeout` (optional, default 60), `read_timeout` (optional, default 30, milestone 8) -- connects to a Winlink RMS Packet gateway, logs in, downloads up to one block of waiting mail; returns a list of `WinlinkMessage` dicts. `password` is never logged anywhere on this request's path (see kamxl_daemon.py's `_m_winlink_check_mail()`). |
 
 `read_timeout` is a worst-case ceiling, not a fixed wait: the KAM-XL
 library polls the connected-mode response in short slices and returns

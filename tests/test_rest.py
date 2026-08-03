@@ -20,6 +20,7 @@ from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 from kamxl_daemon import KAMDaemon
 from packet import Packet
 from pbbs import PBBSMessage, PBBSMessageSummary
+from winlink import Proposal, WinlinkMessage
 import kamxl_rest
 
 
@@ -465,6 +466,102 @@ class PBBSEndpointTests(RestTestCase):
         self.addCleanup(conn.close)
 
         conn.request("GET", "/pbbs")
+        response = conn.getresponse()
+        response.read()
+
+        self.assertEqual(response.status, 401)
+
+
+class WinlinkEndpointTests(RestTestCase):
+    """
+    Milestone 8. daemon.kam.check_winlink_mail is stubbed directly,
+    same reasoning as PBBSEndpointTests above -- these are about the
+    REST layer's own routing, body validation, and response shape.
+    """
+
+    def test_check_mail(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+
+        proposal = Proposal(
+            msg_type="P", sender="N0CALL", via="AI6K-10",
+            recipient="AI6K-10", mid="12345_N0CALL", size=42,
+            raw="FB P N0CALL AI6K-10 AI6K-10 12345_N0CALL 42",
+        )
+
+        daemon.kam.check_winlink_mail = lambda **kwargs: [
+            WinlinkMessage(
+                title="Test Subject", body="Hello there.",
+                proposal=proposal, raw="Test Subject\r\nHello there.",
+            )
+        ]
+
+        status, payload = self.request(
+            port, "POST", "/winlink/check",
+            body={"gateway": "AI6K-10", "password": "FOOBAR"}
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["result"]), 1)
+        self.assertEqual(payload["result"][0]["title"], "Test Subject")
+
+    def test_check_mail_missing_gateway_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/check",
+            body={"password": "FOOBAR"}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_check_mail_missing_password_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/check",
+            body={"gateway": "AI6K-10"}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_check_mail_requires_auth_when_enabled(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/check",
+            body={"gateway": "AI6K-10", "password": "FOOBAR"},
+            token=None
+        )
+
+        self.assertEqual(status, 401)
+
+    def test_winlink_page_served(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/winlink?token=test-token")
+        response = conn.getresponse()
+        html = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("Content-Type"), "text/html; charset=utf-8"
+        )
+        self.assertIn("kamxl Winlink", html)
+        self.assertIn("/winlink/check", html)
+        self.assertIn('type="password"', html)
+
+    def test_winlink_page_requires_auth_when_enabled(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/winlink")
         response = conn.getresponse()
         response.read()
 

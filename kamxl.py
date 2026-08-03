@@ -8,6 +8,17 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 from packet import Packet, PacketParser
 from pbbs import PBBSMessage, PBBSMessageSummary, parse_message, parse_message_list
+from winlink import (
+    WinlinkMessage,
+    build_fs_line,
+    build_handshake_response,
+    has_end_of_block_marker,
+    has_fq_marker,
+    parse_message_block,
+    parse_proposals,
+    parse_secure_challenge,
+    split_message_blocks,
+)
 
 
 # Library code stays silent by default (NullHandler) -- an app like
@@ -1259,23 +1270,31 @@ class KAMXL:
     # connect from the local serial terminal gets automatic SYSOP
     # privilege -- no password exchange needed.
 
-    def _collect_pbbs_response(self, timeout: float) -> str:
+    def _poll_until(
+        self,
+        done: Callable[[str], bool],
+        timeout: float
+    ) -> str:
         """
-        Collect connected-mode text from a PBBS command, stopping as
-        soon as its "ENTER COMMAND:" prompt reappears (meaning it's
-        finished and waiting for the next command) rather than always
+        Collect connected-mode text in short slices, stopping as soon
+        as ``done(accumulated_text)`` returns True rather than always
         waiting out one fixed-duration read_connected() call.
 
-        Real bug this fixes: a single read_connected(timeout=N) call
-        just returns whatever arrived in N seconds, whether or not the
-        PBBS was actually done sending -- a real message (found live,
-        on hardware) had its last line silently truncated because it
-        took slightly longer than the old fixed 5s window to fully
-        arrive. Polling in short slices and watching for the prompt
-        means the common case returns as soon as it's actually
-        finished, and ``timeout`` becomes a true worst-case ceiling
-        instead of "the length of every single call, whether needed
-        or not."
+        Generalized from a PBBS-specific helper (originally
+        _collect_pbbs_response(), now a thin wrapper around this) after
+        a real bug: a single read_connected(timeout=N) call just
+        returns whatever arrived in N seconds, whether or not the
+        far end was actually done sending -- a real PBBS message
+        (found live, on hardware) had its last line silently truncated
+        because it took slightly longer than the old fixed 5s window
+        to fully arrive. Polling in short slices and checking a
+        predicate means the common case returns as soon as it's
+        actually finished, and ``timeout`` becomes a true worst-case
+        ceiling instead of "the length of every single call, whether
+        needed or not." Milestone 8 (Winlink) reuses this directly,
+        since its multi-stage handshake/proposal/message exchange has
+        several different "are we done yet" conditions, not just one
+        fixed prompt string the way PBBS has.
         """
         deadline = time.monotonic() + timeout
         text = ""
@@ -1288,10 +1307,21 @@ class KAMXL:
 
             text += self.read_connected(timeout=min(1.0, remaining))
 
-            if "ENTER COMMAND" in text.upper():
+            if done(text):
                 break
 
         return text
+
+    def _collect_pbbs_response(self, timeout: float) -> str:
+        """
+        Collect connected-mode text from a PBBS command, stopping as
+        soon as its "ENTER COMMAND:" prompt reappears (meaning it's
+        finished and waiting for the next command). See _poll_until().
+        """
+        return self._poll_until(
+            lambda text: "ENTER COMMAND" in text.upper(),
+            timeout
+        )
 
     def list_pbbs_messages(
         self,
@@ -1362,3 +1392,114 @@ class KAMXL:
         logger.debug("pbbs read raw: %r", text)
 
         return parse_message(text)
+
+    # -----------------------------------------------------------------------
+    # Winlink (Milestone 8)
+    # -----------------------------------------------------------------------
+    #
+    # Connects to a real Winlink RMS Packet gateway over AX.25 and
+    # downloads whatever mail is waiting -- receive-only for this
+    # first pass (see winlink.py's module docstring for the full scope
+    # writeup: plain-ASCII FBB tier only, no compression, single
+    # message block per call, no outbound send yet). Built from the
+    # public B2F/FBB specs and a trusted open-source reference
+    # implementation, UNVERIFIED against a real gateway -- expect
+    # adjustment once actually tested, the same way pbbs.py's parsing
+    # was before Dave's real-hardware pass confirmed (and partially
+    # corrected) it.
+
+    def check_winlink_mail(
+        self,
+        gateway: str,
+        password: str,
+        mycall: Optional[str] = None,
+        connect_timeout: float = 60,
+        read_timeout: float = 30,
+    ) -> List[WinlinkMessage]:
+        """
+        Connect to a Winlink RMS Packet gateway, complete the
+        secure-login handshake, and download whatever mail is waiting
+        -- up to one proposal block (5 messages) per call; see
+        winlink.py's module docstring for why. Never proposes an
+        outbound message of our own (receive-only MVP scope) -- this
+        can't be used to send mail yet.
+
+        ``mycall`` defaults to the KAM-XL's own MYCALL (its first port
+        value, if MYCALL is a multi-port setting) -- this needs to
+        match your registered Winlink account callsign, or the
+        gateway's secure login will reject it. ``password`` is your
+        real Winlink account password, sent as an 8-digit challenge
+        response, never in the clear (see winlink.secure_login_response()) --
+        still, don't log it; this method deliberately never does.
+
+        Returns an empty list if there's no mail waiting (the gateway
+        replies "FQ" instead of proposing anything) -- not an error.
+        """
+        if mycall is None:
+            # MYCALL can be a multi-port value like "AI6K-10/AI6K-10"
+            # -- Winlink account identity isn't tied to a specific
+            # radio port, so only the first one is used.
+            mycall = self.get("MYCALL").split("/")[0].strip()
+
+        self.connect_station(gateway, timeout=connect_timeout)
+
+        try:
+            handshake_text = self._poll_until(
+                lambda text: text.rstrip().endswith(">"),
+                read_timeout
+            )
+
+            logger.debug("winlink handshake raw: %r", handshake_text)
+
+            challenge = None
+
+            for line in handshake_text.splitlines():
+                challenge = parse_secure_challenge(line)
+
+                if challenge is not None:
+                    break
+
+            response = build_handshake_response(
+                mycall,
+                secure_challenge=challenge,
+                password=password if challenge else None,
+            )
+
+            # "FF" tells the gateway we have nothing to propose --
+            # receive-only MVP, see this method's docstring.
+            self.send_connected(response + "\rFF")
+
+            proposal_text = self._poll_until(
+                lambda text: (
+                    has_end_of_block_marker(text) or has_fq_marker(text)
+                ),
+                read_timeout
+            )
+
+            logger.debug("winlink proposals raw: %r", proposal_text)
+
+            if has_fq_marker(proposal_text):
+                return []
+
+            proposals = parse_proposals(proposal_text)
+
+            if not proposals:
+                return []
+
+            self.send_connected(build_fs_line(len(proposals)))
+
+            messages_text = self._poll_until(
+                lambda text: text.count("\x1a") >= len(proposals),
+                read_timeout
+            )
+
+            logger.debug("winlink messages raw: %r", messages_text)
+        finally:
+            self.disconnect_station()
+
+        blocks = split_message_blocks(messages_text, len(proposals))
+
+        return [
+            parse_message_block(block, proposal)
+            for block, proposal in zip(blocks, proposals)
+        ]

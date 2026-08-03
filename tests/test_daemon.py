@@ -18,6 +18,7 @@ from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 
 from kamxl_daemon import KAMDaemon
 from pbbs import PBBSMessage, PBBSMessageSummary
+from winlink import Proposal, WinlinkMessage
 
 
 class _Client:
@@ -425,6 +426,91 @@ class PBBSTests(DaemonTestCase):
         client = self.connect(socket_path)
 
         response = client.call("pbbs.read_message")
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["type"], "MissingParam")
+
+
+class WinlinkTests(DaemonTestCase):
+    """
+    Milestone 8. Same reasoning as PBBSTests above:
+    daemon.kam.check_winlink_mail is stubbed directly rather than
+    driven through a real connect/handshake/proposal exchange (already
+    covered in tests/test_winlink.py's KAMXLWinlinkIntegrationTests) --
+    these are about what the daemon layer itself adds: lock
+    acquisition, params passed through, dataclass -> JSON-safe dict
+    conversion (including the nested Proposal dataclass).
+    """
+
+    def test_check_mail_returns_json_safe_dicts(self):
+        daemon, socket_path = self.start_daemon(ScriptedSerial({}))
+
+        proposal = Proposal(
+            msg_type="P", sender="N0CALL", via="AI6K-10",
+            recipient="AI6K-10", mid="12345_N0CALL", size=42,
+            raw="FB P N0CALL AI6K-10 AI6K-10 12345_N0CALL 42",
+        )
+
+        daemon.kam.check_winlink_mail = lambda **kwargs: [
+            WinlinkMessage(
+                title="Test Subject", body="Hello there.",
+                proposal=proposal, raw="Test Subject\r\nHello there.",
+            )
+        ]
+
+        client = self.connect(socket_path)
+        response = client.call(
+            "winlink.check_mail", gateway="AI6K-10", password="FOOBAR"
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(len(response["result"]), 1)
+        self.assertEqual(response["result"][0]["title"], "Test Subject")
+        self.assertEqual(
+            response["result"][0]["proposal"]["sender"], "N0CALL"
+        )
+
+    def test_check_mail_passes_params_through(self):
+        daemon, socket_path = self.start_daemon(ScriptedSerial({}))
+
+        captured = {}
+
+        def fake_check(**kwargs):
+            captured.update(kwargs)
+            return []
+
+        daemon.kam.check_winlink_mail = fake_check
+
+        client = self.connect(socket_path)
+        client.call(
+            "winlink.check_mail",
+            gateway="AI6K-10",
+            password="FOOBAR",
+            mycall="AI6K-2",
+            connect_timeout=90,
+            read_timeout=15,
+        )
+
+        self.assertEqual(captured["gateway"], "AI6K-10")
+        self.assertEqual(captured["password"], "FOOBAR")
+        self.assertEqual(captured["mycall"], "AI6K-2")
+        self.assertEqual(captured["connect_timeout"], 90)
+        self.assertEqual(captured["read_timeout"], 15)
+
+    def test_missing_gateway_is_missing_param(self):
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.check_mail", password="FOOBAR")
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["type"], "MissingParam")
+
+    def test_missing_password_is_missing_param(self):
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.check_mail", gateway="AI6K-10")
 
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["type"], "MissingParam")

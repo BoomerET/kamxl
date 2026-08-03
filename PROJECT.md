@@ -360,7 +360,98 @@ foundation -- Milestone 1 here. Direction as of now:
    start flowing once this is checked for real -- expect adjustment
    the same way `packet.py`'s `HEADER_RE` and `pbbs.py`'s parsing both
    needed it. 158/158 tests passing at time of writing.
-8. **Plugins for Wavelog, Winlink, and Home Assistant**.
+8. **Plugins for Wavelog, Winlink, and Home Assistant** -- Winlink
+   done (first pass), scoped down deliberately from "plugins for all
+   three." Asked directly (same pattern as every prior milestone)
+   which of the three to tackle first, given how different they are;
+   Winlink was chosen since it builds on the connected-mode work from
+   milestone 6, whereas Wavelog/Home Assistant would each be closer to
+   a fresh integration. Wavelog and Home Assistant remain unstarted.
+
+   Unlike every other milestone so far, this one is built on a real,
+   separately-documented external protocol (FBB/B2F over AX.25 --
+   <https://winlink.org/B2F>, <http://www.f6fbb.org/protocole.html>),
+   not something derived from the KAM-XL manual -- there's no "manual
+   vs. real hardware" tension here, but the same research-before-code
+   discipline applied: both specs were fetched and read in full before
+   any code was written, and the one genuinely security-sensitive
+   piece -- the secure-login challenge/response algorithm -- was
+   ported from `wl2k-go`, a real, widely-used open-source Winlink
+   client, and verified against its own published test vectors before
+   being trusted (`winlink.SECURE_LOGIN_TEST_VECTORS`,
+   `tests/test_winlink.py`) -- not just "matches the spec as written."
+
+   Three scope questions were asked upfront: protocol tier (**plain
+   ASCII FBB**, chosen over full binary-compressed B2F -- no LZHUF
+   compression codec to port, no binary YAPP-style framing/checksums,
+   still genuinely interoperable since B2-capable gateways must stay
+   backward-compatible with plain FBB), direction (**receive-only**,
+   chosen over send+receive both -- connects, logs in, downloads
+   whatever's waiting; composing/sending a new message is a followup,
+   mirroring milestone 6's read-only-first PBBS scoping), and test
+   target (Dave has a real registered Winlink account, so secure login
+   needed to be implemented, not just connectivity).
+
+   New `winlink.py` (parsing/building, mirroring `pbbs.py`'s
+   relationship to raw text): `secure_login_response()` (verified, see
+   above), SID parse/build (deliberately claiming only `F$` -- ASCII-
+   basic + BID, not `B`/`B1`/`B2`, so a real gateway will only ever
+   propose plain-text messages to us), `;PQ:`/`;FW:` handshake
+   line handling, `FB` proposal line parsing, `FS` response building,
+   and Ctrl-Z-delimited message body splitting -- no binary framing at
+   the ASCII-basic tier at all. One real, non-obvious consequence of
+   the ASCII-only choice, called out explicitly in the module
+   docstring and worth repeating here: per the B2F spec, a station
+   that can't do B2 only ever receives the plain message body, not
+   Winlink's richer structured address header (Mid/Date/From/To/
+   Subject/attachments) -- a real capability tradeoff of the scope
+   choice, not a bug.
+
+   `KAMXL.check_winlink_mail()` drives the exchange (connect, read
+   handshake, send login response + "FF" since we never propose
+   outbound mail, read the gateway's proposals or `FQ`, accept
+   everything via `FS`, read the message bodies, disconnect) using the
+   same connected-mode primitives PBBS uses. This needed a real
+   refactor: PBBS's `_collect_pbbs_response()` (poll `read_connected()`
+   in short slices until a specific string reappears) only had one
+   "are we done yet" condition to check; Winlink's exchange has a
+   different one at each of its three stages. Generalized into
+   `_poll_until(predicate, timeout)`, with `_collect_pbbs_response()`
+   becoming a one-line wrapper around it -- existing PBBS tests still
+   passing confirms the refactor didn't change its behavior. MVP scope
+   cut: only one proposal block (up to 5 messages) is read per call:
+   a real account with more pending mail than that would need a
+   second call to fetch the rest, untested since it needs an account
+   with that much backlog to actually observe.
+
+   `kamxl_daemon.py` gained `winlink.check_mail` (`password` never
+   logged anywhere on this request's path); `kamxl_rest.py` gained
+   `POST /winlink/check` and a fourth self-contained page at
+   `GET /winlink`. The web UI specifically was held back pending a
+   direct question -- asked because putting a real Winlink account
+   password into a browser-rendered form over plain HTTP felt like it
+   deserved an explicit okay rather than the same assumption already
+   made for the API's own bearer token. Dave said yes; the page never
+   persists the password (no cookie, no `localStorage`) and clears the
+   field after every submit attempt.
+
+   Also found, while implementing the always-different "am I done
+   reading yet" logic Winlink's multi-stage exchange needed: nothing
+   new to hardware, but a real gap in test tooling was NOT hit here
+   the way milestone 7's CannedSerial race was -- this milestone's
+   integration tests stub the four connected-mode primitives directly
+   (`connect_station`/`send_connected`/`read_connected`/
+   `disconnect_station`) from the start, the same pattern PBBS's own
+   tests settled on after hitting that exact problem, so Winlink's
+   test suite never attempted the shared-queue approach that caused
+   it.
+
+   **Unverified against a real RMS gateway.** Everything except the
+   secure-login algorithm is a first draft against the spec, not a
+   captured live session -- expect adjustment once actually tested,
+   the same way `packet.py`'s `HEADER_RE`, `pbbs.py`'s parsing, and
+   (still pending) `aprs.py`'s parsing all needed it. 198/198 tests
+   passing at time of writing.
 
 ---
 

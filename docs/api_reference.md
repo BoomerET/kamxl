@@ -106,18 +106,51 @@ module docstring and `tests/test_pbbs.py`'s `RealHardwareEmptyMailboxTests`).
 
 `read_timeout` is a worst-case ceiling, not a fixed wait: both methods
 collect the connected-mode response through a private
-`_collect_pbbs_response()` helper that polls in short slices and
-returns as soon as the PBBS's `ENTER COMMAND:` prompt reappears
-(meaning it's done sending), rather than always waiting out the full
-duration. This replaced an earlier design that did a single
-`read_connected(timeout=read_timeout)` call -- on real hardware, a
-message that took slightly longer than that fixed window to fully
-arrive had its last line silently truncated.
+`_collect_pbbs_response()` helper (a thin wrapper around the more
+general `_poll_until()`, added for milestone 8's Winlink support --
+see below) that polls in short slices and returns as soon as the
+PBBS's `ENTER COMMAND:` prompt reappears (meaning it's done sending),
+rather than always waiting out the full duration. This replaced an
+earlier design that did a single `read_connected(timeout=read_timeout)`
+call -- on real hardware, a message that took slightly longer than
+that fixed window to fully arrive had its last line silently
+truncated.
 
 | Method | Description |
 | --- | --- |
 | `list_pbbs_messages(mypbbs=None, connect_timeout=15, read_timeout=10)` | Connect to the PBBS and list its messages. `mypbbs` defaults to the KAM-XL's current `MYPBBS` setting. Returns a list of `PBBSMessageSummary`. |
 | `read_pbbs_message(number, mypbbs=None, connect_timeout=15, read_timeout=10)` | Connect to the PBBS and read one message. Returns a `PBBSMessage`, or `None` if the response didn't look like a message (e.g. the number doesn't exist). |
+
+### Winlink (Milestone 8)
+
+Connects to a real Winlink RMS Packet gateway over AX.25 and
+downloads whatever mail is waiting, using the FBB/B2F forwarding
+protocol (`winlink.py`) -- a real, separately-documented protocol
+(<https://winlink.org/B2F>, <http://www.f6fbb.org/protocole.html>),
+not something derived from the KAM-XL manual.
+
+**Scope, chosen deliberately** (see PROJECT.md's milestone 8
+writeup): plain ASCII FBB tier only (no LZHUF compression, no binary
+framing -- `winlink.py` never claims `B`/`B1`/`B2` in its own SID, so
+a real gateway will never propose a compressed message to us) and
+receive-only (never proposes an outbound message of its own). One
+practical consequence of the ASCII-only choice: per the B2F spec,
+messages received this way carry only a plain title + body, not
+Winlink's richer structured address header (Mid/Date/From/To/Subject/
+attachments) -- that header is only transmitted to B2-capable clients.
+
+**Unverified against a real RMS gateway.** Built from the spec and
+cross-checked against a trusted open-source reference implementation
+(`wl2k-go`) for the one genuinely security-sensitive piece -- the
+secure-login response algorithm, verified against `wl2k-go`'s own
+published test vectors (`winlink.SECURE_LOGIN_TEST_VECTORS`,
+`tests/test_winlink.py`). Everything else is a first draft, expected
+to need the same kind of real-hardware correction `pbbs.py` and
+`packet.py`'s `HEADER_RE` both needed.
+
+| Method | Description |
+| --- | --- |
+| `check_winlink_mail(gateway, password, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway` (an RMS Packet station's callsign), complete secure login if challenged, and download up to one proposal block (5 messages) of waiting mail. `mycall` defaults to the KAM-XL's `MYCALL` (first port value). Returns a list of `WinlinkMessage`, empty if nothing's waiting. `password` is never logged. |
 
 ### Exceptions
 
@@ -309,3 +342,47 @@ a client is actually watching.
 | `update(packet, now=None)` | Feed one `Packet` in. Returns the resulting `Station` if it decoded as a position report, `None` otherwise. |
 | `list_stations()` | All known stations, sorted by callsign. |
 | `get_station(callsign)` | One station, or `None` if never heard. |
+
+## `Proposal` / `WinlinkMessage`
+
+*(from `winlink.py`, milestone 8)*
+
+```python
+@dataclass(frozen=True)
+class Proposal:
+    msg_type: str   # 'P' private, 'B' bulletin
+    sender: str
+    via: str         # "BBS of recipient" (@) field
+    recipient: str
+    mid: str         # unique message ID, for dedup
+    size: int
+    raw: str
+
+
+@dataclass(frozen=True)
+class WinlinkMessage:
+    title: str       # plain FBB title line -- NOT a structured
+                      # Winlink address header, see below
+    body: str
+    proposal: Proposal
+    raw: str
+```
+
+`Proposal` is one "FB ..." line -- the gateway offering a message.
+`WinlinkMessage` pairs the downloaded body with the `Proposal` that
+offered it. Because this module only claims the plain-ASCII FBB tier
+(deliberately, see PROJECT.md milestone 8), `title` is just a plain
+FBB title line, not Winlink's richer Mid/Date/From/To/Subject header
+-- that's only sent to clients claiming B2 support.
+
+| Function | Description |
+| --- | --- |
+| `secure_login_response(challenge, password)` | The 8-digit response to a `;PQ:` secure-login challenge. Ported from `wl2k-go` and verified against its own test vectors -- see `SECURE_LOGIN_TEST_VECTORS`. Case-sensitive on `password`, matching the reference exactly. |
+| `parse_secure_challenge(line)` | Parse a `;PQ: <digits>` line, or `None`. |
+| `parse_sid(line)` / `build_sid(app_name, app_version)` | Parse a remote SID line, or build our own (always `F$` -- ASCII-basic + BID only). |
+| `sid_has_code(sid, code)` | Whether a parsed `RemoteSID` advertises a given feature code. |
+| `build_handshake_response(mycall, app_name, app_version, secure_challenge=None, password=None)` | Build the `;FW:`/SID/`;PR:` block to send after reading the remote's handshake. Raises `ValueError` if a challenge was given with no password. |
+| `parse_proposal(line)` / `parse_proposals(text)` | Parse one or all `FB ...` proposal lines. |
+| `build_fs_line(count, accept=True)` | Build an `FS ...` line accepting (or rejecting) every proposed message -- MVP scope, no per-message selection yet. |
+| `has_end_of_block_marker(text)` / `has_fq_marker(text)` | Whether text contains `F>`/`FF` (block done) or `FQ` (session ending). |
+| `split_message_blocks(text, count)` / `parse_message_block(raw_text, proposal)` | Split Ctrl-Z-delimited message bodies out of raw text, and turn one into a `WinlinkMessage`. |

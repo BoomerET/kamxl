@@ -112,6 +112,7 @@ class KAMDaemon:
             "disconnect_station": self._m_disconnect_station,
             "pbbs.list_messages": self._m_pbbs_list_messages,
             "pbbs.read_message": self._m_pbbs_read_message,
+            "winlink.check_mail": self._m_winlink_check_mail,
             "monitor.subscribe": self._m_monitor_subscribe,
             "monitor.unsubscribe": self._m_monitor_unsubscribe,
             "stations.list": self._m_stations_list,
@@ -248,6 +249,25 @@ class KAMDaemon:
             )
 
         return dataclasses.asdict(message) if message is not None else None
+
+    def _m_winlink_check_mail(
+        self, params: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        # Deliberately never logs params here (or anywhere else this
+        # request passes through -- the request-handling loop below
+        # only ever logs the *method name* on success/failure, never
+        # its params) -- params["password"] is a real Winlink account
+        # password.
+        with self._kam_lock:
+            messages = self.kam.check_winlink_mail(
+                gateway=params["gateway"],
+                password=params["password"],
+                mycall=params.get("mycall"),
+                connect_timeout=params.get("connect_timeout", 60),
+                read_timeout=params.get("read_timeout", 30),
+            )
+
+        return [dataclasses.asdict(message) for message in messages]
 
     def _m_monitor_subscribe(self, params: Dict[str, Any]) -> None:
         # Actual subscriber-set membership is handled by the request

@@ -69,7 +69,8 @@ more).
 - [docs/rest_api.md](docs/rest_api.md) -- the REST API: endpoints,
   auth, live monitoring over Server-Sent Events, the self-contained
   web terminal it serves at `GET /`, the read-only PBBS browser at
-  `GET /pbbs`, and the live APRS station map at `GET /map`
+  `GET /pbbs`, the live APRS station map at `GET /map`, and the
+  receive-only Winlink mail checker at `GET /winlink`
 - [examples/](examples/) -- runnable scripts, including two that need
   no hardware at all
 

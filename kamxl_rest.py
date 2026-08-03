@@ -172,6 +172,7 @@ TERMINAL_HTML = """<!doctype html>
     <span>
       <a href="#" id="pbbsLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">pbbs</a>
       <a href="#" id="mapLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">map</a>
+      <a href="#" id="winlinkLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">winlink</a>
     </span>
   </div>
   <div id="output"></div>
@@ -248,6 +249,7 @@ TERMINAL_HTML = """<!doctype html>
 
   document.getElementById("pbbsLink").href = authedUrl("/pbbs");
   document.getElementById("mapLink").href = authedUrl("/map");
+  document.getElementById("winlinkLink").href = authedUrl("/winlink");
 
   // -- Live monitor (milestone 5) ------------------------------------
   //
@@ -402,6 +404,7 @@ PBBS_HTML = """<!doctype html>
   <span>
     <a href="#" id="terminalLink">terminal</a>
     <a href="#" id="mapLink">map</a>
+    <a href="#" id="winlinkLink">winlink</a>
   </span>
 </div>
 <div id="content">
@@ -421,6 +424,7 @@ PBBS_HTML = """<!doctype html>
 
   document.getElementById("terminalLink").href = authedUrl("/");
   document.getElementById("mapLink").href = authedUrl("/map");
+  document.getElementById("winlinkLink").href = authedUrl("/winlink");
 
   function escapeHtml(text) {
     var div = document.createElement("div");
@@ -535,6 +539,209 @@ PBBS_HTML = """<!doctype html>
 </html>
 """
 
+# Milestone 8: a page served at GET /winlink for checking Winlink mail
+# -- receive-only per Dave's chosen MVP scope (see winlink.py's module
+# docstring): a form (gateway callsign, account password, optional
+# mycall override) posts to POST /winlink/check and renders whatever
+# comes back. The password field is never persisted anywhere (no
+# localStorage, no cookie) and is cleared from the form after every
+# submit attempt, success or failure -- typed fresh each time you
+# check mail, the same "acceptable for a trusted home LAN, not the
+# open internet" posture already documented for the bearer token (see
+# this file's own module docstring), extended here to a real Winlink
+# account password rather than assumed to be fine without saying so.
+WINLINK_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>kamxl Winlink</title>
+<style>
+  html, body {
+    margin: 0;
+    min-height: 100%;
+    background: #0b0f10;
+    color: #d4f7d4;
+    font-family: "Courier New", Courier, monospace;
+  }
+  .paneHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: #101617;
+    border-bottom: 1px solid #234;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    color: #888;
+    box-sizing: border-box;
+  }
+  .paneHeader a { color: #9c9; text-decoration: none; margin-left: 8px; }
+  .paneHeader a:hover { color: #cfc; }
+  #content { padding: 12px; max-width: 640px; }
+  form { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
+  label { font-size: 12px; color: #789; }
+  input {
+    background: #0b0f10;
+    color: #d4f7d4;
+    border: 1px solid #345;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 13px;
+  }
+  input:focus { outline: none; border-color: #5a8; }
+  button {
+    background: none;
+    border: 1px solid #345;
+    color: #9c9;
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 10px;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+  button:hover:not(:disabled) { border-color: #5a8; color: #cfc; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  .notice { color: #999; font-style: italic; }
+  .err { color: #f77; }
+  .msg {
+    border: 1px solid #1c2526;
+    padding: 8px 10px;
+    margin-bottom: 10px;
+  }
+  .msg .hdr { color: #6cf; margin-bottom: 6px; }
+  .msg .body { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div class="paneHeader">
+  <span>WINLINK</span>
+  <span>
+    <a href="#" id="terminalLink">terminal</a>
+    <a href="#" id="pbbsLink">pbbs</a>
+    <a href="#" id="mapLink">map</a>
+  </span>
+</div>
+<div id="content">
+  <form id="checkForm">
+    <div>
+      <label for="gateway">RMS gateway callsign</label>
+      <input id="gateway" required placeholder="e.g. KD5EOC-10" />
+    </div>
+    <div>
+      <label for="password">Winlink account password</label>
+      <input id="password" type="password" autocomplete="off" required />
+    </div>
+    <div>
+      <label for="mycall">My callsign (optional -- defaults to the KAM-XL's MYCALL)</label>
+      <input id="mycall" placeholder="e.g. AI6K-10" />
+    </div>
+    <button id="submitBtn" type="submit">Check mail</button>
+  </form>
+  <div id="results" class="notice">
+    Receive-only for now -- connects, logs in, and downloads whatever
+    mail is waiting (up to one block, 5 messages). Can take a while
+    (AX.25 connect + login + proposal exchange), so don't worry if it
+    sits for a bit.
+  </div>
+</div>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var token = params.get("token") || "";
+  var results = document.getElementById("results");
+  var form = document.getElementById("checkForm");
+  var submitBtn = document.getElementById("submitBtn");
+  var passwordInput = document.getElementById("password");
+
+  function authedUrl(path) {
+    if (!token) return path;
+    var sep = path.indexOf("?") === -1 ? "?" : "&";
+    return path + sep + "token=" + encodeURIComponent(token);
+  }
+
+  document.getElementById("terminalLink").href = authedUrl("/");
+  document.getElementById("pbbsLink").href = authedUrl("/pbbs");
+  document.getElementById("mapLink").href = authedUrl("/map");
+
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.textContent = text == null ? "" : String(text);
+    return div.innerHTML;
+  }
+
+  function renderMessages(messages) {
+    if (!messages.length) {
+      results.innerHTML = '<div class="notice">No mail waiting.</div>';
+      return;
+    }
+
+    var html = "";
+
+    messages.forEach(function (m) {
+      var hdr = "FROM " + m.proposal.sender + "  (" + m.proposal.mid + ")";
+
+      html += '<div class="msg"><div class="hdr">' + escapeHtml(m.title) +
+        "</div><div class=\\"hdr\\">" + escapeHtml(hdr) + "</div>" +
+        '<div class="body">' + escapeHtml(m.body) + "</div></div>";
+    });
+
+    results.innerHTML = html;
+  }
+
+  form.addEventListener("submit", async function (e) {
+    e.preventDefault();
+
+    var gateway = document.getElementById("gateway").value.trim();
+    var password = passwordInput.value;
+    var mycall = document.getElementById("mycall").value.trim();
+
+    if (!gateway || !password) return;
+
+    submitBtn.disabled = true;
+    results.innerHTML = '<div class="notice">Connecting...</div>';
+
+    var body = { gateway: gateway, password: password };
+    if (mycall) body.mycall = mycall;
+
+    try {
+      var res = await fetch(authedUrl("/winlink/check"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      var payload = await res.json();
+
+      if (payload.ok) {
+        renderMessages(payload.result);
+      } else {
+        results.innerHTML = '<div class="err">' +
+          escapeHtml((payload.error && payload.error.message) || "Request failed") +
+          "</div>";
+      }
+    } catch (err) {
+      results.innerHTML = '<div class="err">' + escapeHtml(String(err)) + "</div>";
+    } finally {
+      // Never left sitting in the form after a submit attempt,
+      // success or failure -- see this page's own comment in
+      // kamxl_rest.py for why.
+      passwordInput.value = "";
+      submitBtn.disabled = false;
+    }
+  });
+
+  if (!token) {
+    results.innerHTML =
+      '<div class="notice">No ?token=... in this page\\'s URL. If the ' +
+      "server was started with authentication, requests below will " +
+      "fail with 401 -- reload with ?token=&lt;your key&gt; appended " +
+      "to the URL.</div>";
+  }
+})();
+</script>
+</body>
+</html>
+"""
+
 # Milestone 7: a third self-contained page, served at GET /map, showing
 # stations.py's station database on a Leaflet + OpenStreetMap map.
 # Leaflet is loaded from cdnjs (this project's one allowed CDN for
@@ -603,7 +810,11 @@ MAP_HTML = """<!doctype html>
 <body>
 <div class="paneHeader">
   <span>STATION MAP <span id="stationCount"></span></span>
-  <a href="#" id="terminalLink">terminal</a>
+  <span>
+    <a href="#" id="terminalLink">terminal</a>
+    <a href="#" id="pbbsLink">pbbs</a>
+    <a href="#" id="winlinkLink">winlink</a>
+  </span>
 </div>
 <div id="empty" style="display:none;">No stations heard yet.</div>
 <div id="map"></div>
@@ -622,6 +833,8 @@ MAP_HTML = """<!doctype html>
   }
 
   document.getElementById("terminalLink").href = authedUrl("/");
+  document.getElementById("pbbsLink").href = authedUrl("/pbbs");
+  document.getElementById("winlinkLink").href = authedUrl("/winlink");
 
   var map = L.map("map").setView([0, 0], 2);
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -902,6 +1115,8 @@ ROUTES: Tuple[Tuple[str, "re.Pattern", str], ...] = (
     ("GET", re.compile(r"^/map$"), "_h_map_page"),
     ("GET", re.compile(r"^/stations$"), "_h_stations_list"),
     ("GET", re.compile(r"^/stations/(?P<callsign>[A-Za-z0-9\-]+)$"), "_h_stations_get"),
+    ("POST", re.compile(r"^/winlink/check$"), "_h_winlink_check_mail"),
+    ("GET", re.compile(r"^/winlink$"), "_h_winlink_page"),
 )
 
 
@@ -1302,6 +1517,53 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
 
     def _h_stations_get(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
         self._relay("stations.get", callsign=params["callsign"])
+
+    # -- Winlink (milestone 8) -------------------------------------------
+    #
+    # Receive-only MVP (see winlink.py's module docstring) -- drives a
+    # full connect/handshake/proposal/message/disconnect cycle on the
+    # daemon side (KAMXL.check_winlink_mail()), so the socket timeout
+    # budget mirrors the PBBS endpoints' reasoning above. POST with a
+    # JSON body, not GET with query params, specifically because the
+    # request carries a real account password -- never acceptable in
+    # a URL (query strings end up in server access logs, browser
+    # history, etc.).
+
+    def _h_winlink_page(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        body = WINLINK_HTML.encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _h_winlink_check_mail(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        body = self._read_json_body()
+
+        for field in ("gateway", "password"):
+            if field not in body:
+                self._send_json(400, {
+                    "ok": False,
+                    "error": {
+                        "type": "MissingParam",
+                        "message": f"Missing required body field: {field!r}",
+                    },
+                })
+                return
+
+        connect_timeout = body.get("connect_timeout", 60)
+        read_timeout = body.get("read_timeout", 30)
+
+        self._relay(
+            "winlink.check_mail",
+            gateway=body["gateway"],
+            password=body["password"],
+            mycall=body.get("mycall"),
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            _socket_timeout=connect_timeout + (read_timeout * 3) + 40,
+        )
 
 
 # ---------------------------------------------------------------------------

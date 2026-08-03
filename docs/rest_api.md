@@ -94,6 +94,8 @@ call actually does.
 | GET | `/stations` | | List known stations, see [Stations / map](#stations--map) |
 | GET | `/stations/<CALLSIGN>` | | One station; `result` is `null` if never heard |
 | GET | `/map` | | Serves the station map web page |
+| POST | `/winlink/check` | `{"gateway", "password", "mycall"?, "connect_timeout"?, "read_timeout"?}` | Check/download Winlink mail, see [Winlink](#winlink) |
+| GET | `/winlink` | | Serves the Winlink check-mail web page |
 
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
@@ -306,6 +308,52 @@ neither has been checked yet against real APRS traffic the way
 Treat it as a first draft; see `aprs.py`'s module docstring for two
 specific known simplifications (compressed positions unsupported,
 position ambiguity not fully modeled).
+
+## Winlink
+
+Milestone 8. `GET /winlink` serves a fourth self-contained page: a
+form (RMS gateway callsign, your Winlink account password, an
+optional `mycall` override) that posts to `POST /winlink/check` and
+renders whatever mail comes back. Linked from the terminal, PBBS, and
+map pages' headers, and back again.
+
+**The password field deserves its own callout.** It's sent as a
+regular JSON body field (`POST`, never a URL/query parameter -- see
+the [Authentication](#authentication) section's own reasoning for why
+that matters generally, doubly so for a real email account password
+rather than just this API's own bearer token) over the same plain
+HTTP this whole API already uses -- acceptable on a trusted home LAN,
+same posture as everything else here, **not safe over the open
+internet** without TLS in front of it. The page never persists the
+password (no cookie, no `localStorage`) and clears the field after
+every submit attempt, success or failure -- typed fresh each time you
+check mail rather than sitting in the page.
+
+```
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"gateway": "KD5EOC-10", "password": "..."}' \
+  http://kam-host:8080/winlink/check
+```
+
+Unlike PBBS/stations, this drives a genuinely slower exchange (AX.25
+connect + secure login + FBB proposal negotiation), so give it real
+time -- the endpoint's socket timeout budget scales with
+`read_timeout` (default 30s) times three, since the underlying
+`KAMXL.check_winlink_mail()` polls through three separate stages
+(handshake, proposals, message bodies), plus `connect_timeout` and a
+margin for `disconnect_station()`.
+
+**Receive-only, plain-ASCII FBB tier only, unverified against a real
+gateway.** See `winlink.py`'s module docstring and
+[api_reference.md](api_reference.md#winlink-milestone-8) for the full
+scope writeup -- in short: no compression, no outbound send yet, and
+messages come back with a plain title/body rather than Winlink's
+richer structured header (a real consequence of the ASCII-only
+choice, not a bug). The one piece that's actually confirmed correct
+independent of real-hardware testing is the secure-login response
+algorithm, verified against a trusted open-source reference
+implementation's own test vectors.
 
 ## Testing
 
