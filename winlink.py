@@ -52,17 +52,34 @@ tested against real traffic where that would actually happen.
 
 PARTIALLY VERIFIED AGAINST A REAL RMS GATEWAY. The handshake and
 secure login were confirmed working end-to-end against a real
-gateway (KD5EOC-10): SID exchange, the ";PQ:"/";PR:" challenge-
-response, and correctly detecting "no mail waiting" (via a bare
-"FQ") were all observed live and matched what this module expected.
-That same test also surfaced a real bug (since fixed -- see
+gateway (KD5EOC-10): the SID exchange and the ";PQ:"/";PR:" challenge-
+response were both observed live and matched what this module
+expected. That same test also surfaced a real bug (since fixed -- see
 has_end_of_block_marker()'s docstring): the KAM-XL echoes our own
 connected-mode transmission back to us, which our own "FF" (always
 sent, since this module never proposes anything of its own) could be
 mistaken for the gateway's reply if the wrong text was treated as a
-stop marker. Proposal parsing and message-body extraction are still
-unverified against a real populated mailbox -- that needs an account
-with actual mail waiting to test, which hasn't happened yet. Expect
+stop marker. To be precise: that test's final "no mail waiting"
+answer was actually correct, but the bug meant the code never
+genuinely reached the gateway's real "FQ" reply before returning --
+the "FQ" no-mail path itself wasn't actually exercised that day, just
+coincidentally not disproven either.
+
+A second real-hardware test against the same gateway found that it
+requires B2 protocol support and disconnects the AX.25 link outright
+(printing "*** [3] Use B2 protocol - Disconnecting") rather than
+falling back to plain ASCII for a client, like this one, that never
+claims "B"/"B1"/"B2" in its own SID -- see parse_disconnect_reason()'s
+docstring for the full story and the real bug that test also
+surfaced (check_winlink_mail() used to hang and raise a confusing
+KAMTimeoutError instead of a clear error when this happened, since
+fixed). Practically, this means the current implementation cannot
+retrieve mail from a gateway that enforces B2 -- only from one
+willing to speak plain-ASCII FBB to a non-B2 client.
+
+Proposal parsing and message-body extraction are still unverified
+against a real populated mailbox -- that needs an account with
+actual mail waiting to test, which hasn't happened yet. Expect
 the same kind of further correction packet.py's HEADER_RE and
 pbbs.py's parsing both needed after their own first real tests.
 """
@@ -368,6 +385,53 @@ def has_end_of_block_marker(text: str) -> bool:
 def has_fq_marker(text: str) -> bool:
     """Whether text contains a bare "FQ" line -- session ending."""
     return any(line.strip() == "FQ" for line in text.splitlines())
+
+
+_DISCONNECT_BANNER_RE = re.compile(r"\*\*\*\s*disconnected", re.IGNORECASE)
+
+
+def parse_disconnect_reason(text: str) -> Optional[str]:
+    """
+    Whether ``text`` contains the KAM-XL's own "*** DISCONNECTED"
+    banner -- meaning the AX.25 link is already gone, not just idle.
+    Returns ``None`` if there's no such banner. If there is, returns
+    the KAM-XL's stated reason (the nearest preceding "***"-prefixed
+    line, if any -- e.g. "*** [3] Use B2 protocol - Disconnecting
+    (47.190.139.106)") or "" if the banner appeared with no such line.
+
+    Real bug found live against a real gateway (KD5EOC-10, Denton
+    County Texas EOC): our SID only ever claims "F$" (plain ASCII,
+    receive-only -- see this module's docstring), never "B"/"B1"/"B2".
+    This particular gateway responded to that by printing "*** [3] Use
+    B2 protocol - Disconnecting (...)" and dropping the AX.25 link
+    entirely, rather than falling back to plain-ASCII FBB the way the
+    B2F spec's text ("if a station cannot support the B2 protocol then
+    only the message body is transmitted") seems to promise. Whatever
+    poll was running when that arrived (in the observed case, the
+    proposals-detection poll -- it never saw "F>"/"FQ", so ran to its
+    full read_timeout and captured the disconnect banner and the
+    KAM-XL's own "cmd:" prompt along with it) ends up swallowing the
+    "cmd:" prompt that a *subsequent* disconnect_station() call would
+    otherwise wait for. Since the KAM-XL doesn't print a new one until
+    provoked, and there is nothing left to provoke it with, that
+    disconnect_station() call has nothing to wait for and reliably
+    times out (observed: "KAMTimeoutError: Timed out returning to
+    Command mode", 5 seconds later -- enter_command_mode()'s default
+    command_mode_timeout). KAMXL.check_winlink_mail() calls this after
+    every poll stage so it can raise a clear, specific error and skip
+    the doomed disconnect_station() call instead.
+    """
+    lines = [line.strip() for line in text.splitlines()]
+
+    for index, line in enumerate(lines):
+        if _DISCONNECT_BANNER_RE.search(line):
+            for candidate in reversed(lines[:index]):
+                if candidate.startswith("***"):
+                    return candidate
+
+            return ""
+
+    return None
 
 
 # -----------------------------------------------------------------------

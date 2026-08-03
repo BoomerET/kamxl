@@ -503,6 +503,76 @@ foundation -- Milestone 1 here. Direction as of now:
    populated mailbox remain unverified -- that needs an account with
    real mail waiting, which hasn't happened yet.
 
+   **Update: second real-hardware test, second real bug found.** Dave
+   connected to the same gateway again. This time the daemon's
+   verbose log showed:
+
+   ```
+   08:47:39 conn-4464: connected
+   08:47:50 winlink handshake raw: 'Welcome to the Denton County
+       Texas EOC\r\n[WL2K-5.0-B2FWIHJM$]\r\n;PQ: 97759037\r\n
+       CMS via KD5EOC >\r\n'
+   08:48:21 winlink proposals raw: ';FW: AI6K\r\n
+       [kamxl-0.1-F$]\r\n;PR: 84304290\r\nFF\r\n*** [3] Use B2
+       protocol - Disconnecting (47.190.139.106)\r\n***
+       DISCONNECTED\r\ncmd:AI6K>KD5EOC-10/2: <<UA>>:\r\n'
+   08:48:26 conn-4464: winlink.check_mail -> KAMTimeoutError:
+       Timed out returning to Command mode
+   08:48:26 conn-4464: disconnected
+   ```
+
+   Two separate things going on here. First: this gateway apparently
+   requires B2 protocol support and, seeing our SID claim only
+   `F$` (plain ASCII, our deliberate scope choice -- see above),
+   printed `*** [3] Use B2 protocol - Disconnecting` and dropped the
+   AX.25 link outright, rather than falling back to plain-ASCII FBB
+   the way the B2F spec's own text ("if a station cannot support the
+   B2 protocol then only the message body is transmitted") seems to
+   promise. That's a real limit on this milestone's scope, not a bug
+   in our code: as built, this module simply cannot retrieve mail
+   from a gateway that enforces B2. The 30-second gap between the
+   "handshake raw" and "proposals raw" lines is the proposals poll
+   running to its full `read_timeout`, since it never saw the `F>` or
+   `FQ` marker it was waiting for -- just this disconnect text.
+
+   Second, and this part *was* a real bug: by the time
+   `check_winlink_mail()` reached its `finally`-block
+   `disconnect_station()` call, the KAM-XL had already auto-returned
+   to Command mode on its own after the remote hangup -- the `cmd:`
+   prompt visible at the end of "proposals raw" above was already
+   consumed by that same poll. `disconnect_station()` had no way to
+   know that, so it sent its usual Ctrl-C and waited for a *new*
+   `cmd:` prompt that was never going to arrive (nothing left to
+   provoke one), reliably timing out 5 seconds later -- exactly the
+   `08:48:21` -> `08:48:26` gap in the log, matching
+   `enter_command_mode()`'s default `command_mode_timeout`. The
+   result was a confusing `KAMTimeoutError: Timed out returning to
+   Command mode` that gave no hint of what actually happened.
+
+   Fixed by adding `winlink.parse_disconnect_reason()`, which checks
+   any accumulated poll text for the KAM-XL's own `*** DISCONNECTED`
+   banner and, if found, extracts the nearest preceding `***`-prefixed
+   line as the stated reason. `check_winlink_mail()` now calls this
+   after every poll stage; if it fires, the method raises a clear
+   `KAMConnectionError` naming the gateway and quoting the reason
+   (e.g. `"KD5EOC-10 disconnected before completing the Winlink
+   exchange (\"*** [3] Use B2 protocol - Disconnecting ...\") --
+   this can happen if the gateway requires B2 protocol support..."`)
+   and skips the now-pointless `disconnect_station()` call. Added a
+   regression test,
+   `test_gateway_disconnect_mid_session_raises_clear_error`, that
+   replays this exact captured exchange and confirms both the clear
+   error and that `disconnect_station()` is never called. 204/204
+   tests passing.
+
+   This doesn't change the milestone's scope decision, but it does
+   sharpen what "receive-only, plain-ASCII FBB tier" actually means in
+   practice: it only works against a gateway willing to speak that
+   tier to a non-B2 client. Actually retrieving mail from a
+   B2-enforcing gateway like this one would mean implementing the B2
+   protocol tier -- a real scope expansion, not something to start
+   without Dave's go-ahead.
+
 ---
 
 

@@ -20,7 +20,7 @@ import unittest
 
 from fakes import CannedSerial, make_kam  # noqa: F401 (path + fixture reuse)
 
-from kamxl import KAMTimeoutError
+from kamxl import KAMConnectionError, KAMTimeoutError
 import winlink as w
 
 
@@ -176,6 +176,37 @@ class ProposalTests(unittest.TestCase):
     def test_has_fq_marker(self):
         self.assertTrue(w.has_fq_marker("FQ\r\n"))
         self.assertFalse(w.has_fq_marker("FF\r\n"))
+
+    def test_parse_disconnect_reason_returns_none_when_not_disconnected(self):
+        self.assertIsNone(
+            w.parse_disconnect_reason("FB P a b c d 5\r\nF>\r\n")
+        )
+
+    def test_parse_disconnect_reason_extracts_stated_reason(self):
+        # Verbatim shape of a real second bug found live against
+        # KD5EOC-10: this gateway apparently requires B2 protocol
+        # support and hangs up instead of falling back to plain ASCII
+        # for a client (like this one) that never claims "B"/"B1"/"B2"
+        # in its SID. See parse_disconnect_reason()'s docstring and
+        # KAMXLWinlinkIntegrationTests's
+        # test_gateway_disconnect_mid_session_raises_clear_error for
+        # the full story.
+        text = (
+            ";FW: AI6K\r\n[kamxl-0.1-F$]\r\n;PR: 84304290\r\nFF\r\n"
+            "*** [3] Use B2 protocol - Disconnecting (47.190.139.106)\r\n"
+            "*** DISCONNECTED\r\ncmd:AI6K>KD5EOC-10/2: <<UA>>:\r\n"
+        )
+
+        reason = w.parse_disconnect_reason(text)
+
+        self.assertEqual(
+            reason, "*** [3] Use B2 protocol - Disconnecting (47.190.139.106)"
+        )
+
+    def test_parse_disconnect_reason_empty_string_when_no_stated_reason(self):
+        reason = w.parse_disconnect_reason("*** DISCONNECTED\r\ncmd:\r\n")
+
+        self.assertEqual(reason, "")
 
 
 class MessageBlockTests(unittest.TestCase):
@@ -344,6 +375,77 @@ class KAMXLWinlinkIntegrationTests(unittest.TestCase):
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0].title, "Test Subject")
         self.assertEqual(messages[0].proposal.sender, "N0CALL")
+
+    def test_gateway_disconnect_mid_session_raises_clear_error(self):
+        """
+        Regression test for a second real bug found live against
+        KD5EOC-10 (Denton County Texas EOC). Verbatim shape of what
+        was actually observed via daemon -v logging:
+
+            08:47:39 conn-4464: connected
+            08:47:50 winlink handshake raw: 'Welcome to the Denton
+                County Texas EOC\\r\\n[WL2K-5.0-B2FWIHJM$]\\r\\n
+                ;PQ: 97759037\\r\\nCMS via KD5EOC >\\r\\n'
+            08:48:21 winlink proposals raw: ';FW: AI6K\\r\\n
+                [kamxl-0.1-F$]\\r\\n;PR: 84304290\\r\\nFF\\r\\n***
+                [3] Use B2 protocol - Disconnecting
+                (47.190.139.106)\\r\\n*** DISCONNECTED\\r\\n
+                cmd:AI6K>KD5EOC-10/2: <<UA>>:\\r\\n'
+            08:48:26 conn-4464: winlink.check_mail -> KAMTimeoutError:
+                Timed out returning to Command mode
+            08:48:26 conn-4464: disconnected
+
+        This gateway apparently requires B2 protocol support and
+        disconnects rather than falling back to plain ASCII for a
+        client, like this one, that never claims "B"/"B1"/"B2" in its
+        own SID -- it printed "*** [3] Use B2 protocol -
+        Disconnecting" and dropped the AX.25 link. The ~30 second gap
+        between the "handshake raw" and "proposals raw" log lines
+        matches the proposals-detection poll running to its full
+        read_timeout (it never saw "F>"/"FQ", just our own echo
+        followed by the disconnect banner). By the time
+        check_winlink_mail() reached its finally-block
+        disconnect_station() call, the KAM-XL had already
+        auto-returned to Command mode on its own -- the "cmd:" prompt
+        visible in "proposals raw" above was already consumed by that
+        same poll, so disconnect_station()'s Ctrl-C had no fresh
+        prompt left to wait for and reliably timed out 5 seconds
+        later (matching the observed 08:48:21 -> 08:48:26 gap
+        exactly).
+
+        This test confirms the fix: check_winlink_mail() now detects
+        the KAM-XL's own "*** DISCONNECTED" banner in the accumulated
+        text, raises a clear KAMConnectionError describing what
+        happened (quoting the gateway's stated reason) instead of the
+        old confusing KAMTimeoutError, and skips the doomed
+        disconnect_station() call entirely -- see
+        parse_disconnect_reason()'s and check_winlink_mail()'s
+        docstrings for the full story.
+        """
+        kam, calls = self._kam_with_stubs([
+            "Welcome to the Denton County Texas EOC\r\n"
+            "[WL2K-5.0-B2FWIHJM$]\r\n;PQ: 97759037\r\nCMS via KD5EOC >\r\n",
+            ";FW: AI6K\r\n[kamxl-0.1-F$]\r\n;PR: 84304290\r\nFF\r\n"
+            "*** [3] Use B2 protocol - Disconnecting (47.190.139.106)\r\n"
+            "*** DISCONNECTED\r\ncmd:AI6K>KD5EOC-10/2: <<UA>>:\r\n",
+        ])
+
+        with self.assertRaises(KAMConnectionError) as ctx:
+            kam.check_winlink_mail(
+                "KD5EOC-10", "REALPASSWORD", mycall="AI6K",
+                read_timeout=0.05
+            )
+
+        self.assertIn("KD5EOC-10", str(ctx.exception))
+        self.assertIn("Use B2 protocol", str(ctx.exception))
+
+        # The doomed disconnect_station() call must never fire -- the
+        # KAM-XL already returned to Command mode on its own, and
+        # calling it anyway is exactly what produced the old
+        # confusing timeout.
+        self.assertNotIn(
+            "disconnect_station", [call[0] for call in calls]
+        )
 
     def test_pending_mail_downloaded_and_parsed(self):
         kam, calls = self._kam_with_stubs([

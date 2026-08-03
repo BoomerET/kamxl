@@ -14,6 +14,7 @@ from winlink import (
     build_handshake_response,
     has_end_of_block_marker,
     has_fq_marker,
+    parse_disconnect_reason,
     parse_message_block,
     parse_proposals,
     parse_secure_challenge,
@@ -1434,6 +1435,14 @@ class KAMXL:
 
         Returns an empty list if there's no mail waiting (the gateway
         replies "FQ" instead of proposing anything) -- not an error.
+
+        Raises ``KAMConnectionError`` if the gateway hangs up on us
+        mid-exchange (detected via the KAM-XL's own "*** DISCONNECTED"
+        banner -- see winlink.parse_disconnect_reason()'s docstring
+        for the real case this was built from: a gateway that requires
+        B2 protocol support and disconnects rather than falling back
+        to plain ASCII for a client, like this one, that never claims
+        "B"/"B1"/"B2" in its own SID).
         """
         if mycall is None:
             # MYCALL can be a multi-port value like "AI6K-10/AI6K-10"
@@ -1443,6 +1452,35 @@ class KAMXL:
 
         self.connect_station(gateway, timeout=connect_timeout)
 
+        # Set the instant a "*** DISCONNECTED" banner is spotted in any
+        # polled text -- see _raise_if_gateway_hung_up() below. Read by
+        # the finally block: once the KAM-XL has already printed that
+        # banner and returned to Command mode on its own, a further
+        # disconnect_station() call has no fresh "cmd:" prompt left to
+        # wait for (the one that arrived is already consumed) and
+        # reliably times out instead of doing anything useful.
+        gateway_already_disconnected = False
+
+        def _raise_if_gateway_hung_up(text: str) -> None:
+            nonlocal gateway_already_disconnected
+
+            reason = parse_disconnect_reason(text)
+
+            if reason is None:
+                return
+
+            gateway_already_disconnected = True
+
+            detail = f" (\"{reason}\")" if reason else ""
+
+            raise KAMConnectionError(
+                f"{gateway} disconnected before completing the "
+                f"Winlink exchange{detail} -- this can happen if the "
+                f"gateway requires B2 protocol support, which this "
+                f"module doesn't implement (see winlink.py's module "
+                f"docstring for the scope this was built to)."
+            )
+
         try:
             handshake_text = self._poll_until(
                 lambda text: text.rstrip().endswith(">"),
@@ -1450,6 +1488,8 @@ class KAMXL:
             )
 
             logger.debug("winlink handshake raw: %r", handshake_text)
+
+            _raise_if_gateway_hung_up(handshake_text)
 
             challenge = None
 
@@ -1478,6 +1518,8 @@ class KAMXL:
 
             logger.debug("winlink proposals raw: %r", proposal_text)
 
+            _raise_if_gateway_hung_up(proposal_text)
+
             if has_fq_marker(proposal_text):
                 return []
 
@@ -1494,8 +1536,11 @@ class KAMXL:
             )
 
             logger.debug("winlink messages raw: %r", messages_text)
+
+            _raise_if_gateway_hung_up(messages_text)
         finally:
-            self.disconnect_station()
+            if not gateway_already_disconnected:
+                self.disconnect_station()
 
         blocks = split_message_blocks(messages_text, len(proposals))
 

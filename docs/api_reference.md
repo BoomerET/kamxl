@@ -166,9 +166,34 @@ real mail waiting, which hasn't happened yet. Expect the same kind
 of further correction `pbbs.py` and `packet.py`'s `HEADER_RE` both
 needed after their own first real tests.
 
+A second real-hardware test against the same gateway (KD5EOC-10)
+surfaced a second bug: this particular gateway printed `*** [3] Use
+B2 protocol - Disconnecting (...)` and dropped the AX.25 link
+entirely, rather than falling back to plain-ASCII FBB for a client
+that never claims `B`/`B1`/`B2` in its own SID (this module's
+deliberate scope -- see above). `check_winlink_mail()` used to have
+no way to notice this: whichever poll was running when the KAM-XL's
+own `*** DISCONNECTED` banner arrived just kept accumulating it as
+ordinary text, and the method's `finally`-block `disconnect_station()`
+call -- unaware the link was already gone and the KAM-XL had already
+returned to Command mode on its own -- waited for a `cmd:` prompt
+that had already come and gone, reliably timing out with a confusing
+`KAMTimeoutError: Timed out returning to Command mode`. Fixed:
+`check_winlink_mail()` now checks every poll's accumulated text for
+that banner via `winlink.parse_disconnect_reason()`, raises a clear
+`KAMConnectionError` naming the gateway and quoting its stated reason
+when one's present, and skips the now-pointless `disconnect_station()`
+call. See `parse_disconnect_reason()`'s docstring and
+`tests/test_winlink.py`'s
+`test_gateway_disconnect_mid_session_raises_clear_error` for the full
+story. Note this means the current implementation cannot actually
+retrieve mail from a gateway that enforces B2 -- that would require
+implementing the B2 protocol tier, a real scope expansion beyond this
+milestone's deliberate ASCII-only choice.
+
 | Method | Description |
 | --- | --- |
-| `check_winlink_mail(gateway, password, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway` (an RMS Packet station's callsign), complete secure login if challenged, and download up to one proposal block (5 messages) of waiting mail. `mycall` defaults to the KAM-XL's `MYCALL` (first port value). Returns a list of `WinlinkMessage`, empty if nothing's waiting. `password` is never logged. |
+| `check_winlink_mail(gateway, password, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway` (an RMS Packet station's callsign), complete secure login if challenged, and download up to one proposal block (5 messages) of waiting mail. `mycall` defaults to the KAM-XL's `MYCALL` (first port value). Returns a list of `WinlinkMessage`, empty if nothing's waiting. Raises `KAMConnectionError` if the gateway hangs up mid-exchange (e.g. it requires B2 protocol support). `password` is never logged. |
 
 ### Exceptions
 
@@ -179,7 +204,7 @@ All inherit from `KAMError`.
 | `KAMError` | Base class; also raised directly for "not connected" and read-only-parameter errors. |
 | `KAMCommandError` | The KAM-XL responded with `EH?`. |
 | `KAMTimeoutError` | No expected response arrived in time. |
-| `KAMConnectionError` | An AX.25 CONNECT failed (retry exceeded, busy, or an immediate disconnect). |
+| `KAMConnectionError` | An AX.25 CONNECT failed (retry exceeded, busy, or an immediate disconnect), or `check_winlink_mail()` detected the gateway hanging up mid-exchange (see the Winlink section above). |
 
 ## Commands
 

@@ -360,6 +360,17 @@ gateway has nothing to propose" was detected -- see
 api_reference.md's writeup for details. Proposal parsing against an
 actual populated mailbox is still unverified.
 
+A second test against the same gateway found it requires B2 protocol
+support and disconnects rather than falling back to plain ASCII for
+this client -- `/winlink/check` now surfaces that as a clear error
+message (`"KD5EOC-10 disconnected before completing the Winlink
+exchange (\"*** [3] Use B2 protocol - Disconnecting ...\") -- ..."`)
+instead of the confusing timeout it used to produce. See
+api_reference.md's writeup for the full story. Practically, this
+means mail can't currently be retrieved from a gateway that enforces
+B2 -- only from one willing to speak plain-ASCII FBB to a
+non-B2 client.
+
 ## Testing
 
 `tests/test_rest.py` runs a real `KAMDaemon` (wired to the same
