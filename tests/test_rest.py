@@ -537,6 +537,112 @@ class WinlinkEndpointTests(RestTestCase):
 
         self.assertEqual(status, 401)
 
+    def test_send_message(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+
+        daemon.kam.send_winlink_message = lambda **kwargs: ["12345_AI6K"]
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={
+                "gateway": "AI6K-10",
+                "password": "FOOBAR",
+                "messages": [
+                    {"to": ["N0CALL"], "subject": "Hi", "body": "Hello"}
+                ],
+            }
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"], ["12345_AI6K"])
+
+    def test_send_message_missing_gateway_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={
+                "password": "FOOBAR",
+                "messages": [
+                    {"to": ["N0CALL"], "subject": "Hi", "body": "Hello"}
+                ],
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_send_message_missing_password_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={
+                "gateway": "AI6K-10",
+                "messages": [
+                    {"to": ["N0CALL"], "subject": "Hi", "body": "Hello"}
+                ],
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_send_message_missing_messages_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={"gateway": "AI6K-10", "password": "FOOBAR"}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_send_message_empty_messages_list_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={"gateway": "AI6K-10", "password": "FOOBAR", "messages": []}
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_send_message_missing_message_field_is_400(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={
+                "gateway": "AI6K-10",
+                "password": "FOOBAR",
+                # No "body" field on the one message.
+                "messages": [{"to": ["N0CALL"], "subject": "Hi"}],
+            }
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
+
+    def test_send_message_requires_auth_when_enabled(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "POST", "/winlink/send",
+            body={
+                "gateway": "AI6K-10",
+                "password": "FOOBAR",
+                "messages": [
+                    {"to": ["N0CALL"], "subject": "Hi", "body": "Hello"}
+                ],
+            },
+            token=None
+        )
+
+        self.assertEqual(status, 401)
+
     def test_winlink_page_served(self):
         _, port = self.start_stack(ScriptedSerial({}))
 
@@ -553,6 +659,7 @@ class WinlinkEndpointTests(RestTestCase):
         )
         self.assertIn("kamxl Winlink", html)
         self.assertIn("/winlink/check", html)
+        self.assertIn("/winlink/send", html)
         self.assertIn('type="password"', html)
 
     def test_winlink_page_requires_auth_when_enabled(self):

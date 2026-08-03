@@ -36,11 +36,70 @@ just a plain FBB title line and body text, the same reduced shape a
 classic non-Winlink FBB packet BBS message would have. This is a
 genuine capability tradeoff of the ascii-only scope choice, not a bug.
 
-RECEIVE-ONLY (MVP scope): this module has no support for building an
-outbound proposal -- KAMXL.check_winlink_mail() (kamxl.py) always
-tells the gateway it has nothing to send ("FF" immediately after
-login) and only ever accepts whatever the gateway proposes back.
-Composing/sending a new message is a followup, not this pass.
+check_winlink_mail() (kamxl.py) remains receive-only: it always tells
+the gateway it has nothing to send ("FF" immediately after login) and
+only ever accepts whatever the gateway proposes back. Sending is a
+separate method, KAMXL.send_winlink_message() -- see "SEND SUPPORT"
+below.
+
+SEND SUPPORT (kamxl.py's send_winlink_message()): a second real-world
+finding -- the gateway (KD5EOC-10, once B2 was claimed) accepted the
+handshake and B2 negotiation but rejected this module's client
+identity outright (see "KNOWN DISCONNECT REASONS" below) -- means B2
+send support was built and tested offline before real-gateway
+interop could be confirmed either way. Scope, chosen deliberately
+(asked directly, same pattern as every other milestone):
+
+  - SEND-ONLY. send_winlink_message() proposes our own outgoing
+    message(s), uploads whatever the gateway's "FS" answer accepts,
+    then -- when the gateway reciprocates with its own proposal or a
+    bare "FF" -- declines everything it offers back and disconnects.
+    It does NOT also download mail in the same call; that's still
+    check_winlink_mail()'s job, called separately if wanted. A real
+    two-way single-connection exchange (propose + accept incoming too)
+    was considered and deliberately deferred -- more protocol-state
+    complexity for a first version than the simpler two-call approach
+    justifies.
+  - TEXT BODY ONLY, NO ATTACHMENTS. OutgoingMessage carries To/Cc/
+    Subject/Body text only. Mirrors the receive side's metadata-only
+    attachment scope, but there's no metadata-only equivalent for
+    something we're originating -- either real attachment bytes get
+    sent (out of scope) or none do.
+  - B2/FC ONLY, no legacy-ascii ("FB") outbound proposals -- this
+    module's SID already claims B2 (see build_sid()), so there's no
+    reason to fall back to the ascii tier's lossy, single-recipient,
+    no-subject shape for something we're composing ourselves.
+  - NO PERSISTENT OUTBOUND QUEUE / NO PARTIAL-RESUME. Each call
+    composes and sends whatever OutgoingMessage(s) it's given, fresh,
+    in that one session -- there's no mailbox tracking a message as
+    "still pending" across calls, so this module doesn't implement the
+    B2F protocol's offset/partial-resume answer codes (see
+    parse_fs_response()) -- an offset-resume answer is treated as a
+    plain accept-from-zero, a deliberate, documented simplification.
+
+Building blocks: generate_mid() (MID generation, cross-checked against
+wl2k-go's fbb/mid.go), build_encapsulated_message() (the inverse of
+parse_encapsulated_message()), build_b2_proposal_line() and
+build_proposal_block() (outbound "FC ..."/"F> <checksum>" lines --
+see build_proposal_block()'s docstring for where the checksum
+convention itself came from, a real find not in the older ascii-only
+spec), build_b2_block() (the inverse of parse_b2_blocks(), promoted
+from what was originally just a test fixture builder -- it turned out
+to already be exactly the production code needed once real sending
+was in scope), and parse_fs_response() (decoding the gateway's "FS
+..." answer to what we proposed).
+
+UNVERIFIED AGAINST A REAL GATEWAY, same as the B2 receive path was at
+first: no account with permission to actually send B2 mail to a real
+RMS gateway has confirmed this round-trips correctly over the air yet
+(see the "PARTIALLY VERIFIED" note below for what receive-side testing
+has confirmed so far). Every piece here is built from the same two
+cross-checked sources as the rest of B2 (the B2F spec and wl2k-go),
+with the outbound proposal checksum specifically found only in the
+latter -- but "matches two independent descriptions of the protocol"
+is not the same confidence level as "confirmed against a real gateway
+in the field," and this module tries to always be honest about which
+one applies.
 
 SINGLE BLOCK ONLY (MVP scope): the FBB protocol allows up to five
 message proposals per block, with more blocks following if there's
@@ -163,10 +222,13 @@ since guessing which one applies has already gone stale once):
      different name/process than assumed here.
 """
 
+import base64
 import hashlib
 import re
+import time
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Union
 
 import lzhuf
@@ -551,10 +613,30 @@ def build_fs_line(count: int, accept: bool = True) -> str:
     return "FS " + (code * count)
 
 
+_END_OF_BLOCK_RE = re.compile(r"^F>(\s+[0-9A-Fa-f]{1,2})?$")
+
+
 def has_end_of_block_marker(text: str) -> bool:
     """
     Whether ``text`` contains the "F>" line that ends a proposal
     block -- the gateway is done sending proposals for now.
+
+    Tolerates (but does not verify) a trailing checksum after "F>"
+    (e.g. "F> 3A") -- found while researching outbound send support
+    (see build_proposal_block()'s docstring): wl2k-go, a real,
+    actively-interoperating Winlink client, always appends one to the
+    proposal blocks IT sends, and reads one back the same way when
+    receiving. The older f6fbb.org ascii-only doc's own worked
+    examples show a bare "F>" with nothing after it, so it's not
+    certain every gateway sends the checksummed form -- but a real
+    Winlink CMS very well might, and the original strict `== "F>"`
+    match here would have silently never matched that line, meaning
+    check_winlink_mail() would poll until timeout instead of ever
+    detecting the end of a real proposal block. Verifying the checksum
+    (not just tolerating it) would mean reconstructing the exact raw
+    proposal-line bytes the gateway sent from what parse_any_proposals()
+    parsed back out, which isn't preserved today -- accepted as a real,
+    documented gap rather than silently ignored.
 
     Deliberately does NOT also match a bare "FF" line, even though
     "FF" means "I have nothing to propose" and can legitimately come
@@ -579,7 +661,7 @@ def has_end_of_block_marker(text: str) -> bool:
     the echo ambiguity entirely, the same defensive principle PBBS's
     "ENTER COMMAND" marker already relies on.
     """
-    return any(line.strip() == "F>" for line in text.splitlines())
+    return any(_END_OF_BLOCK_RE.match(line.strip()) for line in text.splitlines())
 
 
 def has_fq_marker(text: str) -> bool:
@@ -996,3 +1078,274 @@ def parse_message_block(raw_text: str, proposal: Proposal) -> WinlinkMessage:
         proposal=proposal,
         raw=raw_text,
     )
+
+
+# -----------------------------------------------------------------------
+# Outbound messages (sending) -- see the module docstring's "SEND
+# SUPPORT" section for the deliberate scope: send-only, text-body-only,
+# B2/FC only, no persistent outbound queue/resume.
+# -----------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class OutgoingMessage:
+    """
+    A message this station wants to send -- text body only, see the
+    module docstring's "SEND SUPPORT" note for why there's no
+    attachment support here at all (unlike the receive side's
+    metadata-only compromise, there's no equivalent middle ground for
+    something we're originating).
+
+    ``mid`` is optional -- KAMXL.send_winlink_message() generates one
+    via generate_mid() if left unset. Only set it yourself if you have
+    a real reason to (e.g. resending under the same ID for dedup).
+    """
+
+    to: List[str]
+    subject: str
+    body: str
+    cc: List[str] = field(default_factory=list)
+    msg_type: str = "Private"
+    mid: Optional[str] = None
+
+
+def generate_mid(callsign: str) -> str:
+    """
+    Generate a unique Winlink message ID -- the "Mid:" header field,
+    and the "ID" field of an outgoing FC proposal line. Max 12
+    characters per the B2F spec.
+
+    Algorithm ported from wl2k-go's fbb/mid.go (GenerateMid): MD5 of
+    "<something>-<callsign>", base32-encoded, first 12 characters. Only
+    the *approach* is ported, not a byte-for-byte-compatible format --
+    wl2k-go hashes its own Go time.Time string representation, which
+    this module doesn't try to reproduce, because it doesn't need to:
+    each client only ever generates and later recognizes its own MIDs
+    (for dedup against messages it has already sent/received), never
+    reconstructs or validates another client's MID format. What matters
+    for real interop is that the result is <=12 characters and
+    effectively unique -- both true here, cross-checked against a real
+    reference implementation's approach rather than invented from
+    scratch.
+    """
+    payload = f"{time.time_ns()}-{callsign}".encode("ascii", errors="replace")
+    digest = hashlib.md5(payload).digest()
+
+    return base64.b32encode(digest).decode("ascii")[:12]
+
+
+def build_encapsulated_message(mid: str, msg: OutgoingMessage, mycall: str) -> bytes:
+    """
+    Build the raw (uncompressed) bytes of an encapsulated B2/FC
+    message from an OutgoingMessage -- the inverse of
+    parse_encapsulated_message(), round-tripped through it in
+    tests/test_winlink.py. Per the B2F spec's "Message Structure"
+    section: an ASCII address header (Mid/Date/Type/From/To/Cc/
+    Subject/Mbo/Body, CRLF-separated), a blank line, then the body.
+
+    ``mid`` is a separate parameter rather than pulled from
+    ``msg.mid`` so callers resolve it exactly once (see
+    generate_mid()) and reuse the same value for both this function
+    and the outbound proposal line (build_b2_proposal_line()) --
+    calling generate_mid() twice for the same message would produce
+    two different IDs.
+
+    ``Mbo:`` is set to ``mycall``, matching wl2k-go's own
+    NewMessage() (which sets Mbo to the sending station's own
+    callsign, not the relaying gateway's) -- the B2F spec's own text
+    ("call of the originating RMS") is genuinely ambiguous here, so
+    this follows the reference rather than guessing independently.
+
+    No ``File:`` fields are ever written -- text-body-only by design
+    (see the module docstring).
+
+    Body line endings are normalized to CRLF regardless of how the
+    caller wrote ``msg.body`` (a plain Python string typically only
+    has "\\n"), since the spec requires CRLF throughout and the
+    ``Body:`` field's byte count must match exactly what's actually
+    sent. Per spec, a CRLF terminator is appended after the body and
+    is deliberately NOT counted in ``Body:`` (this module's own
+    parse_encapsulated_message() doesn't care either way, since it
+    slices exactly ``Body:`` characters and ignores whatever follows,
+    but a real gateway parsing our own output might, so this follows
+    the spec precisely rather than relying on that generosity).
+    """
+    date = datetime.now(timezone.utc).strftime("%Y/%m/%d %H:%M")
+    body = msg.body.replace("\r\n", "\n").replace("\n", "\r\n")
+
+    lines = [
+        f"Mid: {mid}",
+        f"Date: {date}",
+        f"Type: {msg.msg_type}",
+        f"From: {mycall}",
+    ]
+    lines += [f"To: {addr}" for addr in msg.to]
+    lines += [f"Cc: {addr}" for addr in msg.cc]
+    lines += [
+        f"Subject: {msg.subject}",
+        f"Mbo: {mycall}",
+        f"Body: {len(body)}",
+    ]
+
+    header = "\r\n".join(lines)
+
+    return (header + "\r\n\r\n" + body + "\r\n").encode("latin-1")
+
+
+def build_b2_proposal_line(mid: str, size: int, compressed_size: int, msg_type: str = "EM") -> str:
+    """
+    Build one outbound "FC ..." proposal line for a message we want to
+    send -- mirrors parse_b2_proposal()'s format exactly. The trailing
+    "0" matches what's consistently observed in real captured examples
+    and wl2k-go's own output (see B2Proposal's docstring); its meaning
+    isn't documented anywhere found so far, but every real example
+    available has it, so this includes it too rather than omitting an
+    apparently-expected field.
+    """
+    return f"FC {msg_type} {mid} {size} {compressed_size} 0"
+
+
+def build_proposal_block(proposal_lines: List[str]) -> str:
+    """
+    Join one or more outbound proposal lines (see
+    build_b2_proposal_line()) into the full block this module sends to
+    propose its own outgoing mail, including the trailing "F> XX"
+    end-of-block marker with its checksum.
+
+    The checksum itself is NOT in the f6fbb.org ascii-basic spec (whose
+    own worked examples show a bare "F>" with nothing after it) -- it
+    was found only by reading wl2k-go's fbb/b2f.go (sendOutbound()),
+    a real, actively-interoperating Winlink client: a two's-complement
+    (mod 256) checksum, uppercase hex, of every proposal line's
+    characters plus a trailing "\\r" for each line, summed across the
+    whole block. Trusted over the older doc's simpler examples because
+    wl2k-go is confirmed working against real production Winlink CMS
+    systems today. See has_end_of_block_marker()'s docstring, updated
+    alongside this to tolerate (though not yet verify) the same
+    checksum suffix on a line we *receive*.
+    """
+    checksum = 0
+
+    for line in proposal_lines:
+        checksum += sum(ord(c) for c in line) + ord("\r")
+
+    checksum = (-checksum) & 0xFF
+
+    lines = list(proposal_lines) + [f"F> {checksum:02X}"]
+
+    return "\r".join(lines)
+
+
+def build_b2_block(title: str, compressed_data: bytes, offset: int = 0, chunk_size: int = 125) -> bytes:
+    """
+    Build one binary-framed (SOH/STX/EOT) message block for
+    transmission -- the wire format expected after a gateway's "FS"
+    answer accepts one of our own outbound B2Proposals. Inverse of
+    parse_b2_blocks(); see that function's docstring for the framing
+    itself and its two independently cross-checked sources.
+
+    ``chunk_size`` defaults to 125, matching wl2k-go's own
+    fbb/b2f.go:writeCompressed() (MaxMsgLength) -- its comment notes
+    the protocol's actual maximum is 255, but 125 is used "to allow use
+    of AX.25 links with a paclen of 128," the exact transport this
+    module also targets, so the same conservative default is used here
+    rather than the higher protocol ceiling.
+    """
+    title_bytes = title.encode("latin-1")
+    offset_bytes = str(offset).encode("ascii")
+    header = title_bytes + b"\x00" + offset_bytes + b"\x00"
+
+    if len(header) > 255:
+        raise WinlinkProtocolError(
+            f"B2 block header too long ({len(header)} bytes, max 255) "
+            f"for title {title!r}"
+        )
+
+    block = bytes([_SOH, len(header)]) + header
+
+    pos = 0
+
+    while pos < len(compressed_data):
+        chunk = compressed_data[pos:pos + chunk_size]
+        length_byte = len(chunk) if len(chunk) < 256 else 0
+        block += bytes([_STX, length_byte]) + chunk
+        pos += len(chunk)
+
+    checksum = (-sum(compressed_data)) & 0xFF
+    block += bytes([_EOT, checksum])
+
+    return block
+
+
+# f6fbb.org's Binary Compressed Forward Version 1 answer vocabulary,
+# mapped to wl2k-go's own three-way classification (fbb/b2f.go's
+# parseProposalAnswer()) -- 'R'(ejected) groups with 'N'/'-', while
+# 'H'(eld) groups with 'L'/'='(defer), NOT with reject, matching that
+# reference exactly (a naive reading of "accepted but will be held"
+# could plausibly be grouped either way; this follows the real,
+# interoperating client's own choice rather than picking independently).
+_FS_ANSWER_CODES = {
+    "Y": "accept", "+": "accept",
+    "N": "reject", "-": "reject", "R": "reject",
+    "L": "defer", "=": "defer", "H": "defer",
+    "E": "error",
+}
+
+
+def parse_fs_response(line: str, count: int) -> List[str]:
+    """
+    Parse a gateway's "FS ..." response to one of our own outbound
+    proposals into a list of ``count`` answers -- one of "accept",
+    "reject", "defer", or "error" apiece, in proposal order.
+
+    Per f6fbb.org's Binary Compressed Forward Version 1 section, an
+    answer can also request a byte offset ("!3350" or "A3350" --
+    accept, but resume from offset 3350 of a previously interrupted
+    transfer). This module has no persistent outbound queue to resume
+    FROM (see the module docstring's "SEND SUPPORT" note -- every
+    OutgoingMessage is composed and sent fresh, never partially
+    retried across sessions), so an offset answer is treated as a
+    plain accept, always sending from the beginning -- a deliberate,
+    documented simplification, not a real implementation of partial
+    resume.
+
+    Raises WinlinkProtocolError if the line doesn't contain exactly
+    ``count`` answers, or contains a character this module doesn't
+    recognize.
+    """
+    text = line.strip()
+
+    if text.startswith("FS "):
+        text = text[3:]
+    elif text == "FS":
+        text = ""
+
+    answers: List[str] = []
+    i = 0
+
+    while i < len(text):
+        c = text[i]
+        i += 1
+
+        if c in ("A", "a", "!"):
+            while i < len(text) and text[i].isdigit():
+                i += 1
+
+            answers.append("accept")
+            continue
+
+        answer = _FS_ANSWER_CODES.get(c.upper())
+
+        if answer is None:
+            raise WinlinkProtocolError(
+                f"Unrecognized character {c!r} in FS response line {line!r}"
+            )
+
+        answers.append(answer)
+
+    if len(answers) != count:
+        raise WinlinkProtocolError(
+            f"FS response has {len(answers)} answer(s), expected "
+            f"{count} (one per proposed message): {line!r}"
+        )
+
+    return answers

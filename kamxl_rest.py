@@ -539,17 +539,20 @@ PBBS_HTML = """<!doctype html>
 </html>
 """
 
-# Milestone 8: a page served at GET /winlink for checking Winlink mail
-# -- receive-only per Dave's chosen MVP scope (see winlink.py's module
-# docstring): a form (gateway callsign, account password, optional
-# mycall override) posts to POST /winlink/check and renders whatever
-# comes back. The password field is never persisted anywhere (no
-# localStorage, no cookie) and is cleared from the form after every
-# submit attempt, success or failure -- typed fresh each time you
-# check mail, the same "acceptable for a trusted home LAN, not the
-# open internet" posture already documented for the bearer token (see
-# this file's own module docstring), extended here to a real Winlink
-# account password rather than assumed to be fine without saying so.
+# Milestone 8: a page served at GET /winlink for checking (and, since
+# the send-support extension, sending) Winlink mail. Two tabs sharing
+# one page: "Check mail" (a form posting to POST /winlink/check,
+# unchanged since milestone 8) and "Send mail" (a form posting to POST
+# /winlink/send -- send-only, text-body-only, B2 only; see winlink.py's
+# module docstring's "SEND SUPPORT" note for the full scope and its
+# UNVERIFIED-AGAINST-A-REAL-GATEWAY caveat, which applies to this UI
+# too). The password field on either form is never persisted anywhere
+# (no localStorage, no cookie) and is cleared after every submit
+# attempt, success or failure -- typed fresh each time, the same
+# "acceptable for a trusted home LAN, not the open internet" posture
+# already documented for the bearer token (see this file's own module
+# docstring), extended here to a real Winlink account password rather
+# than assumed to be fine without saying so.
 WINLINK_HTML = """<!doctype html>
 <html>
 <head>
@@ -610,6 +613,29 @@ WINLINK_HTML = """<!doctype html>
   }
   .msg .hdr { color: #6cf; margin-bottom: 6px; }
   .msg .body { white-space: pre-wrap; word-break: break-word; line-height: 1.4; }
+  textarea {
+    background: #0b0f10;
+    color: #d4f7d4;
+    border: 1px solid #345;
+    padding: 6px 8px;
+    font: inherit;
+    font-size: 13px;
+    min-height: 100px;
+    resize: vertical;
+  }
+  textarea:focus { outline: none; border-color: #5a8; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; }
+  .tabs button {
+    background: none;
+    border: 1px solid #345;
+    color: #789;
+    font: inherit;
+    font-size: 12px;
+    padding: 4px 10px;
+    cursor: pointer;
+  }
+  .tabs button.active { color: #cfc; border-color: #5a8; }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
@@ -622,6 +648,10 @@ WINLINK_HTML = """<!doctype html>
   </span>
 </div>
 <div id="content">
+  <div class="tabs">
+    <button id="checkTabBtn" type="button" class="active">Check mail</button>
+    <button id="sendTabBtn" type="button">Send mail</button>
+  </div>
   <form id="checkForm">
     <div>
       <label for="gateway">RMS gateway callsign</label>
@@ -637,11 +667,41 @@ WINLINK_HTML = """<!doctype html>
     </div>
     <button id="submitBtn" type="submit">Check mail</button>
   </form>
+  <form id="sendForm" class="hidden">
+    <div>
+      <label for="sendGateway">RMS gateway callsign</label>
+      <input id="sendGateway" required placeholder="e.g. KD5EOC-10" />
+    </div>
+    <div>
+      <label for="sendPassword">Winlink account password</label>
+      <input id="sendPassword" type="password" autocomplete="off" required />
+    </div>
+    <div>
+      <label for="sendMycall">My callsign (optional -- defaults to the KAM-XL's MYCALL)</label>
+      <input id="sendMycall" placeholder="e.g. AI6K-10" />
+    </div>
+    <div>
+      <label for="sendTo">To (comma-separated)</label>
+      <input id="sendTo" required placeholder="e.g. N0CALL, W1AW" />
+    </div>
+    <div>
+      <label for="sendCc">Cc (comma-separated, optional)</label>
+      <input id="sendCc" placeholder="e.g. N1CALL" />
+    </div>
+    <div>
+      <label for="sendSubject">Subject</label>
+      <input id="sendSubject" required maxlength="128" />
+    </div>
+    <div>
+      <label for="sendBody">Message body (text only -- no attachments)</label>
+      <textarea id="sendBody" required></textarea>
+    </div>
+    <button id="sendBtn" type="submit">Send message</button>
+  </form>
   <div id="results" class="notice">
-    Receive-only for now -- connects, logs in, and downloads whatever
-    mail is waiting (up to one block, 5 messages). Can take a while
-    (AX.25 connect + login + proposal exchange), so don't worry if it
-    sits for a bit.
+    Connects, logs in, and downloads whatever mail is waiting (up to
+    one block, 5 messages). Can take a while (AX.25 connect + login +
+    proposal exchange), so don't worry if it sits for a bit.
   </div>
 </div>
 <script>
@@ -652,6 +712,37 @@ WINLINK_HTML = """<!doctype html>
   var form = document.getElementById("checkForm");
   var submitBtn = document.getElementById("submitBtn");
   var passwordInput = document.getElementById("password");
+  var sendForm = document.getElementById("sendForm");
+  var sendBtn = document.getElementById("sendBtn");
+  var sendPasswordInput = document.getElementById("sendPassword");
+  var checkTabBtn = document.getElementById("checkTabBtn");
+  var sendTabBtn = document.getElementById("sendTabBtn");
+
+  var CHECK_NOTICE = "Connects, logs in, and downloads whatever mail " +
+    "is waiting (up to one block, 5 messages). Can take a while " +
+    "(AX.25 connect + login + proposal exchange), so don't worry if " +
+    "it sits for a bit.";
+  var SEND_NOTICE = "Send-only, text body only (no attachments) -- " +
+    "see winlink.py's module docstring for the full scope. Connects, " +
+    "proposes the message, uploads it if the gateway accepts, then " +
+    "declines whatever the gateway offers back. UNVERIFIED against a " +
+    "real gateway as of this build -- see PROJECT.md.";
+
+  checkTabBtn.addEventListener("click", function () {
+    checkTabBtn.classList.add("active");
+    sendTabBtn.classList.remove("active");
+    form.classList.remove("hidden");
+    sendForm.classList.add("hidden");
+    results.innerHTML = '<div class="notice">' + CHECK_NOTICE + "</div>";
+  });
+
+  sendTabBtn.addEventListener("click", function () {
+    sendTabBtn.classList.add("active");
+    checkTabBtn.classList.remove("active");
+    sendForm.classList.remove("hidden");
+    form.classList.add("hidden");
+    results.innerHTML = '<div class="notice">' + SEND_NOTICE + "</div>";
+  });
 
   function authedUrl(path) {
     if (!token) return path;
@@ -667,6 +758,10 @@ WINLINK_HTML = """<!doctype html>
     var div = document.createElement("div");
     div.textContent = text == null ? "" : String(text);
     return div.innerHTML;
+  }
+
+  function splitAddresses(value) {
+    return value.split(",").map(function (s) { return s.trim(); }).filter(Boolean);
   }
 
   function renderMessages(messages) {
@@ -752,6 +847,63 @@ WINLINK_HTML = """<!doctype html>
       // kamxl_rest.py for why.
       passwordInput.value = "";
       submitBtn.disabled = false;
+    }
+  });
+
+  sendForm.addEventListener("submit", async function (e) {
+    e.preventDefault();
+
+    var gateway = document.getElementById("sendGateway").value.trim();
+    var password = sendPasswordInput.value;
+    var mycall = document.getElementById("sendMycall").value.trim();
+    var to = splitAddresses(document.getElementById("sendTo").value);
+    var cc = splitAddresses(document.getElementById("sendCc").value);
+    var subject = document.getElementById("sendSubject").value.trim();
+    var msgBody = document.getElementById("sendBody").value;
+
+    if (!gateway || !password || !to.length || !subject || !msgBody) return;
+
+    sendBtn.disabled = true;
+    results.innerHTML = '<div class="notice">Connecting...</div>';
+
+    var reqBody = {
+      gateway: gateway,
+      password: password,
+      messages: [{ to: to, cc: cc, subject: subject, body: msgBody }]
+    };
+    if (mycall) reqBody.mycall = mycall;
+
+    try {
+      var res = await fetch(authedUrl("/winlink/send"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(reqBody)
+      });
+      var payload = await res.json();
+
+      if (payload.ok) {
+        var accepted = payload.result || [];
+
+        if (accepted.length) {
+          results.innerHTML = '<div class="notice">Sent -- gateway ' +
+            "accepted message ID " + escapeHtml(accepted[0]) + ".</div>";
+          sendForm.reset();
+        } else {
+          results.innerHTML = '<div class="notice">Connected, but the ' +
+            "gateway did not accept the message (rejected, deferred, " +
+            "or errored -- nothing more this UI can tell you about " +
+            "why).</div>";
+        }
+      } else {
+        results.innerHTML = '<div class="err">' +
+          escapeHtml((payload.error && payload.error.message) || "Request failed") +
+          "</div>";
+      }
+    } catch (err) {
+      results.innerHTML = '<div class="err">' + escapeHtml(String(err)) + "</div>";
+    } finally {
+      sendPasswordInput.value = "";
+      sendBtn.disabled = false;
     }
   });
 
@@ -1142,6 +1294,7 @@ ROUTES: Tuple[Tuple[str, "re.Pattern", str], ...] = (
     ("GET", re.compile(r"^/stations$"), "_h_stations_list"),
     ("GET", re.compile(r"^/stations/(?P<callsign>[A-Za-z0-9\-]+)$"), "_h_stations_get"),
     ("POST", re.compile(r"^/winlink/check$"), "_h_winlink_check_mail"),
+    ("POST", re.compile(r"^/winlink/send$"), "_h_winlink_send_message"),
     ("GET", re.compile(r"^/winlink$"), "_h_winlink_page"),
 )
 
@@ -1585,6 +1738,62 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
             "winlink.check_mail",
             gateway=body["gateway"],
             password=body["password"],
+            mycall=body.get("mycall"),
+            connect_timeout=connect_timeout,
+            read_timeout=read_timeout,
+            _socket_timeout=connect_timeout + (read_timeout * 3) + 40,
+        )
+
+    def _h_winlink_send_message(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        # Send-only, text-body-only, B2/FC only -- see winlink.py's
+        # module docstring's "SEND SUPPORT" note for the full scope,
+        # and its "UNVERIFIED AGAINST A REAL GATEWAY" caveat, which
+        # still applies as of this endpoint's addition. Same POST/JSON
+        # body reasoning as _h_winlink_check_mail() above (a real
+        # account password, never in a URL).
+        body = self._read_json_body()
+
+        for field in ("gateway", "password", "messages"):
+            if field not in body:
+                self._send_json(400, {
+                    "ok": False,
+                    "error": {
+                        "type": "MissingParam",
+                        "message": f"Missing required body field: {field!r}",
+                    },
+                })
+                return
+
+        if not isinstance(body["messages"], list) or not body["messages"]:
+            self._send_json(400, {
+                "ok": False,
+                "error": {
+                    "type": "MissingParam",
+                    "message": "'messages' must be a non-empty list",
+                },
+            })
+            return
+
+        for message in body["messages"]:
+            for field in ("to", "subject", "body"):
+                if field not in message:
+                    self._send_json(400, {
+                        "ok": False,
+                        "error": {
+                            "type": "MissingParam",
+                            "message": f"Each message needs a {field!r} field",
+                        },
+                    })
+                    return
+
+        connect_timeout = body.get("connect_timeout", 60)
+        read_timeout = body.get("read_timeout", 30)
+
+        self._relay(
+            "winlink.send_message",
+            gateway=body["gateway"],
+            password=body["password"],
+            messages=body["messages"],
             mycall=body.get("mycall"),
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,

@@ -770,6 +770,109 @@ foundation -- Milestone 1 here. Direction as of now:
    238/238 tests passing (two `BuildHandshakeResponseTests` cases
    updated for the new default identity string).
 
+   ### Update: Winlink send support (B2, send-only, text-body-only)
+
+   While Dave's `kamxl_winlink` registration request is pending,
+   several other pieces of the roadmap were unblocked by it. Asked
+   directly which to tackle (same pattern as every prior milestone):
+   Winlink send support -- the biggest remaining capability gap
+   (receive-only until now).
+
+   Research first, per this project's standard practice: re-fetched
+   both prior sources (f6fbb.org's FBB forwarding protocol page,
+   winlink.org/B2F) specifically for the sending/proposing direction,
+   which hadn't been needed before, and fetched several more files
+   from wl2k-go (`fbb/message.go`, `fbb/mid.go`, `fbb/proposal.go`,
+   `fbb/wl2k.go`, `fbb/b2f.go`) to cross-check the outbound side the
+   same way the receiving side was built. Two real, non-obvious finds
+   came out of that research, not just theory:
+
+   - **Outbound proposal blocks carry a checksum after "F>" that the
+     older f6fbb.org ascii-only spec doesn't document at all.**
+     wl2k-go's `sendOutbound()`/`handleInbound()` compute a
+     two's-complement (mod 256) checksum over every proposal line's
+     characters plus a trailing CR, appended as `F> XX` in hex. Since
+     wl2k-go is a real, actively-interoperating Winlink client, this
+     was trusted over the simpler bare-`F>` examples in the older doc.
+     `winlink.build_proposal_block()` implements this for what this
+     module sends; `has_end_of_block_marker()` was also updated to
+     *tolerate* (though not yet verify) the same suffix on a line
+     received FROM a gateway -- a real, previously-latent bug: a
+     production Winlink CMS proposing mail to us the same way wl2k-go
+     itself would have never matched the old strict `== "F>"` check,
+     meaning `check_winlink_mail()` could have silently timed out
+     waiting for a marker that had, in fact, already arrived.
+   - **MID generation** was ported from wl2k-go's `fbb/mid.go`
+     (`generate_mid()`): MD5 hash, base32-encode, first 12 characters.
+     Documented explicitly that byte-for-byte compatibility with
+     wl2k-go's own output doesn't matter (each client only ever
+     recognizes its own MIDs), only the shape (<=12 chars, unique).
+
+   Two scope questions asked directly before writing code (both
+   answered, both binding):
+
+   1. **Exchange scope**: a full two-way single-connection exchange
+      (send AND receive in one call), or a simpler send-only method?
+      Dave chose **send-only** -- `send_winlink_message()` proposes,
+      uploads whatever's accepted, then declines whatever the gateway
+      offers back rather than also downloading. `check_winlink_mail()`
+      remains the way to download, called separately.
+   2. **Attachments**: text body only, or real attachment bytes?
+      Dave chose **text-body-only** -- no attachments at all. Unlike
+      the receive side's metadata-only compromise, there's no
+      equivalent middle ground for something this module originates.
+
+   Built: `winlink.OutgoingMessage` (to/cc/subject/body/msg_type/mid),
+   `generate_mid()`, `build_encapsulated_message()` (inverse of
+   `parse_encapsulated_message()` -- `Mbo:` set to `mycall`, matching
+   wl2k-go's own `NewMessage()`, since the B2F spec's own text for that
+   field is genuinely ambiguous), `build_b2_proposal_line()`,
+   `build_proposal_block()`, `build_b2_block()` (promoted from what was
+   originally just `tests/test_winlink.py`'s own fixture-builder
+   helper -- turned out to already be exactly the production code
+   needed once sending was in scope), and `parse_fs_response()`
+   (decodes a gateway's `FS ...` answer; an offset/partial-resume
+   answer is treated as a plain accept, since this module has no
+   persistent outbound queue to resume from -- documented as a
+   deliberate simplification, not a real implementation of that
+   feature). `kamxl.py` gained `send_connected_bytes()` (the send-side
+   mirror of the earlier `read_connected_bytes()` fix -- `send_connected()`'s
+   ASCII encode would otherwise crash outright on LZHUF-compressed
+   bytes >= 0x80) and `KAMXL.send_winlink_message()` itself.
+
+   Also worked out from first principles (not fully spelled out
+   anywhere in either source for this specific single-round case): the
+   session-termination tail after declining the gateway's reciprocal
+   proposal. Rather than inventing a new termination convention,
+   `send_winlink_message()` mirrors `check_winlink_mail()`'s own
+   already-working precedent exactly -- answer with `FS` if there's a
+   real proposal to answer, then just call `disconnect_station()`,
+   with no separate explicit `FF`/`FQ` text needed first.
+
+   Wired into the daemon (`winlink.send_message` method,
+   `kamxl_daemon.py`) and REST API (`POST /winlink/send`,
+   `kamxl_rest.py`) matching the established pattern, plus a "Send
+   mail" tab on the `/winlink` web page (To/Cc/Subject/body form, same
+   password-hygiene posture as the existing check-mail tab -- never
+   persisted, cleared after every submit).
+
+   276/276 tests passing, including new round-trip tests (an outbound
+   block built by `build_b2_block()` decodes back through the same
+   `parse_b2_blocks()`/`lzhuf.decompress_b2()`/`parse_encapsulated_message()`
+   pipeline used for received mail, confirming self-consistency) and
+   an independent checksum cross-check for `build_proposal_block()`
+   (same "write it twice, compare" discipline as `lzhuf.py`'s own CRC-16
+   cross-check).
+
+   **UNVERIFIED AGAINST A REAL GATEWAY**, same honest caveat as the B2
+   receive path started with: no account with permission to actually
+   deliver mail through a real RMS gateway has confirmed this
+   round-trips correctly over the air yet. Every piece here is built
+   from the same two cross-checked sources as the rest of B2, with the
+   outbound checksum specifically found only in wl2k-go -- but that's
+   still "matches two independent descriptions of the protocol," not
+   "confirmed against a real gateway in the field."
+
 ---
 
 

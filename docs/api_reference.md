@@ -262,9 +262,29 @@ waiting on a B2-enforcing gateway, which hasn't happened). Expect the
 same kind of correction this project's other first-drafts needed once
 tested for real.
 
+**Send support** (`send_winlink_message()`): built after Dave chose
+`kamxl_winlink` as the next area of work while the client-registration
+question above was still pending. Scope, confirmed directly (same
+pattern as every other milestone): send-only (proposes our own
+message(s), uploads whatever the gateway accepts, then declines
+whatever the gateway offers back rather than also downloading in the
+same call -- `check_winlink_mail()` remains the way to download),
+text-body-only (no attachments -- there's no metadata-only middle
+ground for something we're originating, unlike the receive side),
+B2/FC only, and no persistent outbound queue or partial-resume
+support. Built from the same two cross-checked sources as the rest of
+B2, plus a real find specific to sending: wl2k-go appends a
+two's-complement checksum after the "F>" end-of-block marker on
+proposals it sends (not documented in the older ascii-only spec) --
+see `winlink.build_proposal_block()`'s docstring. **Same
+UNVERIFIED-AGAINST-A-REAL-GATEWAY caveat as the rest of B2** -- no
+account with permission to actually deliver mail to a real RMS gateway
+has confirmed this round-trips over the air yet.
+
 | Method | Description |
 | --- | --- |
 | `check_winlink_mail(gateway, password, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway` (an RMS Packet station's callsign), complete secure login if challenged, and download up to one proposal block (5 messages) of waiting mail -- ASCII or B2, whichever the gateway proposes. `mycall` defaults to the KAM-XL's `MYCALL` (first port value). Returns a list of `WinlinkMessage`, empty if nothing's waiting. Raises `KAMConnectionError` if the gateway hangs up mid-exchange; `winlink.WinlinkProtocolError` if a block mixes ASCII and B2 proposals, or a B2 message fails to decompress/checksum-verify. `password` is never logged. |
+| `send_winlink_message(gateway, password, messages, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway`, complete secure login if challenged, and send 1-5 `OutgoingMessage`s via B2. Returns the MID of each message the gateway actually accepted (in `messages` order) -- a rejected/deferred/errored message is left out, an empty return isn't itself an error. Always declines whatever the gateway offers back (send-only -- see above). Raises `ValueError` for an empty or >5-length `messages`; `KAMConnectionError` on a mid-exchange disconnect; `winlink.WinlinkProtocolError` if the gateway's `FS` answer is malformed or never arrives. `password` is never logged. |
 
 ### Exceptions
 
@@ -275,7 +295,7 @@ All inherit from `KAMError`.
 | `KAMError` | Base class; also raised directly for "not connected" and read-only-parameter errors. |
 | `KAMCommandError` | The KAM-XL responded with `EH?`. |
 | `KAMTimeoutError` | No expected response arrived in time. |
-| `KAMConnectionError` | An AX.25 CONNECT failed (retry exceeded, busy, or an immediate disconnect), or `check_winlink_mail()` detected the gateway hanging up mid-exchange (see the Winlink section above). |
+| `KAMConnectionError` | An AX.25 CONNECT failed (retry exceeded, busy, or an immediate disconnect), or `check_winlink_mail()`/`send_winlink_message()` detected the gateway hanging up mid-exchange (see the Winlink section above). |
 
 `winlink.WinlinkProtocolError` (plain `Exception`, not a `KAMError` --
 it's a B2F/FBB protocol-layer error, not a KAM-XL/serial one) is
@@ -467,7 +487,7 @@ a client is actually watching.
 | `list_stations()` | All known stations, sorted by callsign. |
 | `get_station(callsign)` | One station, or `None` if never heard. |
 
-## `Proposal` / `B2Proposal` / `WinlinkMessage`
+## `Proposal` / `B2Proposal` / `WinlinkMessage` / `OutgoingMessage`
 
 *(from `winlink.py`, milestone 8; B2 support added afterward)*
 
@@ -514,6 +534,16 @@ class WinlinkMessage:
     cc: List[str] = field(default_factory=list)
     subject: Optional[str] = None
     attachments: List[Attachment] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class OutgoingMessage:      # a message to send -- see send_winlink_message()
+    to: List[str]
+    subject: str
+    body: str                        # text only -- no attachments
+    cc: List[str] = field(default_factory=list)
+    msg_type: str = "Private"
+    mid: Optional[str] = None        # auto-generated (generate_mid()) if unset
 ```
 
 `Proposal` is one legacy "FB ..." line. `B2Proposal` is one B2 "FC
@@ -539,6 +569,12 @@ offered it; its extra fields are only meaningful for a B2 message
 | `parse_b2_blocks(data, count)` | Parse up to `count` binary-framed (`SOH`/`STX`/`EOT`) message blocks out of raw bytes -- returns a list of `B2Block` (`title`, `offset`, `compressed_data`). Raises `WinlinkProtocolError` on a checksum mismatch or unexpected byte. |
 | `parse_encapsulated_message(data)` | Parse one decompressed B2 message per the B2F spec's "Message Structure" section, returning an `EncapsulatedMessage` (`mid`, `date`, `msg_type`, `from_`, `to`, `cc`, `subject`, `mbo`, `body`, `attachments`, `extra_headers`). |
 | `winlink_message_from_encapsulated(proposal, encapsulated)` | Build a `WinlinkMessage` from a `B2Proposal` and its parsed `EncapsulatedMessage`. |
+| `generate_mid(callsign)` | Generate a unique <=12-character Winlink message ID. Algorithm (MD5 + base32, first 12 chars) ported from `wl2k-go`'s `fbb/mid.go` -- see the function's docstring for why exact byte-for-byte compatibility with that reference doesn't matter here. |
+| `build_encapsulated_message(mid, msg, mycall)` | Build the raw bytes of an outbound B2 message from an `OutgoingMessage` -- the inverse of `parse_encapsulated_message()`. `Mbo:` is set to `mycall`, matching `wl2k-go`'s own convention. |
+| `build_b2_proposal_line(mid, size, compressed_size, msg_type="EM")` | Build one outbound `FC ...` proposal line. |
+| `build_proposal_block(proposal_lines)` | Join outbound proposal lines into the full block sent to propose our own mail, including the `F> XX` checksum trailer -- see the function's docstring for where that checksum convention was found (not in the older ascii-only spec). |
+| `build_b2_block(title, compressed_data, offset=0, chunk_size=125)` | Build one binary-framed (`SOH`/`STX`/`EOT`) message block for transmission -- the inverse of `parse_b2_blocks()`. `chunk_size` defaults to 125, matching `wl2k-go`'s own AX.25-safety margin. |
+| `parse_fs_response(line, count)` | Parse a gateway's `FS ...` answer to our own proposal into `count` answers (`"accept"`/`"reject"`/`"defer"`/`"error"`). An offset/partial-resume answer is treated as a plain accept -- see the function's docstring. Raises `WinlinkProtocolError` on a wrong count or unrecognized character. |
 
 ## `lzhuf` (LZHUF compression)
 

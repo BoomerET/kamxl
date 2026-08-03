@@ -12,17 +12,24 @@ from packet import Packet, PacketParser
 from pbbs import PBBSMessage, PBBSMessageSummary, parse_message, parse_message_list
 from winlink import (
     B2Proposal,
+    OutgoingMessage,
     Proposal,
     WinlinkMessage,
     WinlinkProtocolError,
+    build_b2_block,
+    build_b2_proposal_line,
+    build_encapsulated_message,
     build_fs_line,
     build_handshake_response,
+    build_proposal_block,
+    generate_mid,
     has_end_of_block_marker,
     has_fq_marker,
     parse_any_proposals,
     parse_b2_blocks,
     parse_disconnect_reason,
     parse_encapsulated_message,
+    parse_fs_response,
     parse_message_block,
     parse_secure_challenge,
     split_message_blocks,
@@ -1170,6 +1177,28 @@ class KAMXL:
         self.serial.write(data)
         self.serial.flush()
 
+    def send_connected_bytes(self, data: bytes) -> None:
+        """
+        Send raw bytes while the KAM-XL is in Convers mode -- unlike
+        send_connected(), does NOT encode through ASCII first.
+
+        Needed for Winlink's B2 binary message-body transfer (mirrors
+        read_connected_bytes()'s reasoning exactly, just for the write
+        direction): send_connected()'s ``str(text).encode("ascii")``
+        would raise ``UnicodeEncodeError`` outright for any byte >=
+        0x80, and LZHUF-compressed bytes (see winlink.build_b2_block())
+        span the full 0-255 range. Everything in a Winlink exchange
+        BEFORE the actual compressed message bytes (the handshake, our
+        own proposal lines, even our own "FC ..." B2 proposal line) is
+        still plain ASCII text and continues to use send_connected()
+        unchanged -- only the binary block itself, built by
+        winlink.build_b2_block(), needs this.
+        """
+        self._require_connection()
+
+        self.serial.write(data)
+        self.serial.flush()
+
     def read_connected(
         self,
         timeout: float = 5
@@ -1713,3 +1742,240 @@ class KAMXL:
             parse_message_block(block, proposal)
             for block, proposal in zip(blocks, proposals)
         ]
+
+    def send_winlink_message(
+        self,
+        gateway: str,
+        password: str,
+        messages: List[OutgoingMessage],
+        mycall: Optional[str] = None,
+        connect_timeout: float = 60,
+        read_timeout: float = 30,
+    ) -> List[str]:
+        """
+        Connect to a Winlink RMS Packet gateway, complete secure login,
+        and send one to five outgoing messages -- see winlink.py's
+        module docstring's "SEND SUPPORT" note for the full scope:
+        send-only (never downloads -- that's check_winlink_mail()'s
+        job, called separately if wanted), text-body-only (no
+        attachments), B2/FC only, no persistent outbound queue or
+        partial-resume support.
+
+        Returns the MID of each message the gateway actually accepted,
+        in ``messages`` order -- a message the gateway rejected,
+        deferred, or erred on (see winlink.parse_fs_response()) is
+        simply left out of the returned list. An empty return means
+        nothing was accepted (but the call still completed normally --
+        this is not itself an error).
+
+        Whatever the gateway proposes back to us (the protocol's
+        implicit acknowledgment step, reversing transfer direction) is
+        always declined -- see the module docstring for why this
+        method deliberately doesn't also download in the same call.
+
+        ``mycall``/``password`` behave exactly as in
+        check_winlink_mail() -- see that method's docstring. Raises
+        ``KAMConnectionError`` the same way if the gateway hangs up
+        mid-exchange, and ``winlink.WinlinkProtocolError`` if the
+        gateway's "FS" answer to our proposal is malformed (wrong
+        count, unrecognized code) or never arrives.
+
+        Raises ``ValueError`` if ``messages`` is empty or has more
+        than 5 entries -- the FBB protocol's own per-block limit (see
+        winlink.py's module docstring's "SINGLE BLOCK ONLY" note,
+        which applies here exactly as it does to check_winlink_mail(),
+        just in the opposite direction).
+
+        UNVERIFIED AGAINST A REAL GATEWAY -- see winlink.py's module
+        docstring's "SEND SUPPORT" section. Built and offline-tested
+        against the same two cross-checked sources as the rest of B2,
+        but no account with permission to actually deliver mail through
+        a real RMS gateway has confirmed this round-trips over the air
+        yet.
+        """
+        if not messages:
+            raise ValueError(
+                "messages must contain at least one OutgoingMessage"
+            )
+
+        if len(messages) > 5:
+            raise ValueError(
+                f"Got {len(messages)} messages, but the FBB protocol "
+                f"allows at most 5 proposals per block"
+            )
+
+        if mycall is None:
+            # MYCALL can be a multi-port value like "AI6K-10/AI6K-10"
+            # -- Winlink account identity isn't tied to a specific
+            # radio port, so only the first one is used.
+            mycall = self.get("MYCALL").split("/")[0].strip()
+
+        self.connect_station(gateway, timeout=connect_timeout)
+
+        # Same pattern as check_winlink_mail() -- see that method for
+        # the full story of why this matters (a gateway that hangs up
+        # mid-exchange leaves the KAM-XL already back in Command mode,
+        # which a naive disconnect_station() call would then hang
+        # waiting on).
+        gateway_already_disconnected = False
+
+        def _raise_if_gateway_hung_up(text: str) -> None:
+            nonlocal gateway_already_disconnected
+
+            reason = parse_disconnect_reason(text)
+
+            if reason is None:
+                return
+
+            gateway_already_disconnected = True
+
+            detail = f" (\"{reason}\")" if reason else ""
+
+            raise KAMConnectionError(
+                f"{gateway} disconnected before completing the "
+                f"Winlink exchange{detail}. See winlink.py's module "
+                f"docstring for known real-world reasons this has "
+                f"happened before."
+            )
+
+        accepted_mids: List[str] = []
+
+        try:
+            handshake_text = self._poll_until(
+                lambda text: text.rstrip().endswith(">"),
+                read_timeout
+            )
+
+            logger.debug("winlink send handshake raw: %r", handshake_text)
+
+            _raise_if_gateway_hung_up(handshake_text)
+
+            challenge = None
+
+            for line in handshake_text.splitlines():
+                challenge = parse_secure_challenge(line)
+
+                if challenge is not None:
+                    break
+
+            response = build_handshake_response(
+                mycall,
+                secure_challenge=challenge,
+                password=password if challenge else None,
+            )
+
+            # Resolve each message's MID exactly once up front (see
+            # generate_mid()'s docstring for why) and build everything
+            # needed to both propose and, if accepted, transmit it --
+            # each message's raw bytes are built exactly once, so the
+            # proposal line's declared size is guaranteed to match
+            # what actually gets compressed and sent (rebuilding it a
+            # second time for the size alone would risk a mismatch,
+            # since build_encapsulated_message() stamps the current
+            # time into the Date: header).
+            prepared = []
+
+            for msg in messages:
+                mid = msg.mid or generate_mid(mycall)
+                raw = build_encapsulated_message(mid, msg, mycall)
+                compressed = lzhuf.compress_b2(raw)
+
+                prepared.append((mid, msg, raw, compressed))
+
+            proposal_lines = [
+                build_b2_proposal_line(mid, len(raw), len(compressed))
+                for mid, _msg, raw, compressed in prepared
+            ]
+
+            proposal_block = build_proposal_block(proposal_lines)
+
+            self.send_connected(response + "\r" + proposal_block)
+
+            fs_text = self._poll_until(
+                lambda text: any(
+                    line.strip() == "FS" or line.strip().startswith("FS ")
+                    for line in text.splitlines()
+                ),
+                read_timeout
+            )
+
+            logger.debug("winlink send FS raw: %r", fs_text)
+
+            _raise_if_gateway_hung_up(fs_text)
+
+            fs_line = next(
+                (
+                    line.strip() for line in fs_text.splitlines()
+                    if line.strip() == "FS" or line.strip().startswith("FS ")
+                ),
+                None
+            )
+
+            if fs_line is None:
+                raise WinlinkProtocolError(
+                    f"Gateway never answered our proposal with an FS "
+                    f"line: {fs_text!r}"
+                )
+
+            answers = parse_fs_response(fs_line, len(messages))
+
+            for (mid, msg, _raw, compressed), answer in zip(prepared, answers):
+                if answer != "accept":
+                    continue
+
+                title = msg.subject or "No title"
+                block = build_b2_block(title, compressed)
+                self.send_connected_bytes(block)
+                accepted_mids.append(mid)
+
+            # Yield the turn: per the FBB protocol, the gateway now
+            # either proposes its own waiting mail back (an implicit
+            # ack that it received our block) or says it has nothing
+            # ("FF"). This method never downloads (see docstring) --
+            # whatever the gateway offers here is always declined.
+            #
+            # Checking for a bare "FF" here (unlike
+            # has_end_of_block_marker()'s own documented caution
+            # against doing exactly that) is safe in this specific
+            # spot: the transmission immediately preceding this poll
+            # always ends in either "F> XX" (our proposal block's
+            # checksum trailer, from send_connected() above) or raw
+            # binary EOT bytes (from send_connected_bytes() above, if
+            # any message was accepted) -- never a literal "FF" the
+            # way check_winlink_mail()'s own transmission does, so
+            # there's no echo of our own text to mistake for the
+            # gateway's genuine reply here.
+            reciprocal_text = self._poll_until(
+                lambda text: (
+                    has_end_of_block_marker(text)
+                    or has_fq_marker(text)
+                    or any(line.strip() == "FF" for line in text.splitlines())
+                ),
+                read_timeout
+            )
+
+            logger.debug("winlink send reciprocal raw: %r", reciprocal_text)
+
+            _raise_if_gateway_hung_up(reciprocal_text)
+
+            if has_end_of_block_marker(reciprocal_text):
+                their_proposals = parse_any_proposals(reciprocal_text)
+
+                if their_proposals:
+                    # Send-only scope (see winlink.py's module
+                    # docstring) -- always decline whatever the
+                    # gateway offers back. Downloading it is a
+                    # separate call (check_winlink_mail()), not this
+                    # method's job. No further text needs to follow
+                    # this "FS" reject line -- disconnect_station() in
+                    # the finally block below ends the session the
+                    # same way check_winlink_mail() already does,
+                    # without a separate explicit "FQ"/"FF" first.
+                    self.send_connected(
+                        build_fs_line(len(their_proposals), accept=False)
+                    )
+        finally:
+            if not gateway_already_disconnected:
+                self.disconnect_station()
+
+        return accepted_mids

@@ -49,6 +49,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 from kamxl import KAMXL, KAMError
 from packet import Packet, PacketParser
 from stations import StationTracker
+from winlink import OutgoingMessage
 
 
 DEFAULT_SOCKET_PATH = "/tmp/kamxl.sock"
@@ -113,6 +114,7 @@ class KAMDaemon:
             "pbbs.list_messages": self._m_pbbs_list_messages,
             "pbbs.read_message": self._m_pbbs_read_message,
             "winlink.check_mail": self._m_winlink_check_mail,
+            "winlink.send_message": self._m_winlink_send_message,
             "monitor.subscribe": self._m_monitor_subscribe,
             "monitor.unsubscribe": self._m_monitor_unsubscribe,
             "stations.list": self._m_stations_list,
@@ -268,6 +270,39 @@ class KAMDaemon:
             )
 
         return [dataclasses.asdict(message) for message in messages]
+
+    def _m_winlink_send_message(
+        self, params: Dict[str, Any]
+    ) -> List[str]:
+        # Same password-logging discipline as _m_winlink_check_mail()
+        # above -- never logs params.
+        #
+        # See winlink.py's module docstring's "SEND SUPPORT" note for
+        # scope (send-only, text-body-only, B2/FC only) and
+        # UNVERIFIED-AGAINST-A-REAL-GATEWAY caveat.
+        messages = [
+            OutgoingMessage(
+                to=list(m["to"]),
+                subject=m["subject"],
+                body=m["body"],
+                cc=list(m.get("cc", [])),
+                msg_type=m.get("msg_type", "Private"),
+                mid=m.get("mid"),
+            )
+            for m in params["messages"]
+        ]
+
+        with self._kam_lock:
+            accepted_mids = self.kam.send_winlink_message(
+                gateway=params["gateway"],
+                password=params["password"],
+                messages=messages,
+                mycall=params.get("mycall"),
+                connect_timeout=params.get("connect_timeout", 60),
+                read_timeout=params.get("read_timeout", 30),
+            )
+
+        return accepted_mids
 
     def _m_monitor_subscribe(self, params: Dict[str, Any]) -> None:
         # Actual subscriber-set membership is handled by the request

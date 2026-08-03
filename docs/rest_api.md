@@ -95,7 +95,8 @@ call actually does.
 | GET | `/stations/<CALLSIGN>` | | One station; `result` is `null` if never heard |
 | GET | `/map` | | Serves the station map web page |
 | POST | `/winlink/check` | `{"gateway", "password", "mycall"?, "connect_timeout"?, "read_timeout"?}` | Check/download Winlink mail, see [Winlink](#winlink) |
-| GET | `/winlink` | | Serves the Winlink check-mail web page |
+| POST | `/winlink/send` | `{"gateway", "password", "messages": [{"to", "subject", "body", "cc"?, "msg_type"?, "mid"?}, ...], "mycall"?, "connect_timeout"?, "read_timeout"?}` | Send 1-5 Winlink messages, see [Winlink](#winlink) |
+| GET | `/winlink` | | Serves the Winlink web page (check-mail and send-mail tabs) |
 
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
@@ -344,8 +345,9 @@ time -- the endpoint's socket timeout budget scales with
 (handshake, proposals, message bodies), plus `connect_timeout` and a
 margin for `disconnect_station()`.
 
-**Receive-only, both ASCII and B2 protocol tiers.** See `winlink.py`'s
-module docstring, `lzhuf.py`'s module docstring, and
+**Both ASCII and B2 protocol tiers for receiving; send support added
+afterward (see below).** See `winlink.py`'s module docstring,
+`lzhuf.py`'s module docstring, and
 [api_reference.md](api_reference.md#winlink-milestone-8) for the full
 scope writeup. The secure-login response algorithm is confirmed
 correct independent of real-hardware testing, verified against a
@@ -385,6 +387,32 @@ registration/gatekeeping policy issue on Winlink's infrastructure, not
 something `check_winlink_mail()` can resolve by itself -- see
 `winlink.py`'s module docstring's "KNOWN DISCONNECT REASONS" section
 for the full writeup of both real causes found so far.
+
+**Send support** (`POST /winlink/send`): built once the client
+identity/rename work above was underway, in parallel with the pending
+registration question. Send-only, text-body-only (no attachments),
+B2/FC only -- see `winlink.py`'s module docstring's "SEND SUPPORT"
+note for the full scope and its own UNVERIFIED-AGAINST-A-REAL-GATEWAY
+caveat, which applies here too.
+
+```
+curl -X POST -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "gateway": "KD5EOC-10",
+    "password": "...",
+    "messages": [
+      {"to": ["N0CALL"], "subject": "Test", "body": "Hello via kamxl_winlink"}
+    ]
+  }' \
+  http://kam-host:8080/winlink/send
+```
+
+`result` is a list of the MIDs the gateway actually accepted (empty
+if none were -- not itself an error). The `/winlink` page's "Send
+mail" tab wraps this in a small form (To/Cc/Subject/body), same
+password-hygiene posture as the check-mail tab (never persisted,
+cleared after every submit).
 
 ## Testing
 
