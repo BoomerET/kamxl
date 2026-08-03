@@ -36,7 +36,9 @@ flash can leave the KAM-XL at a different host baud than before (e.g.
 38400 instead of the usual 19200), and this daemon previously had no
 way to be told about that short of editing code. If unsure what the
 KAM-XL is actually set to right now, check with a plain serial
-terminal (e.g. `minicom`) first.
+terminal (e.g. `minicom`) first -- see
+[troubleshooting.md](troubleshooting.md#every-command-times-out-after-a-firmware-flash)
+for how to reset it to a known rate with `ABAUD`.
 
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.

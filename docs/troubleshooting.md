@@ -82,6 +82,27 @@ traffic than you're seeing. It can also just be a quiet channel --
 VHF packet traffic is often sparse outside of scheduled BBS
 forwarding windows.
 
+## "Every command times out after a firmware flash"
+
+A firmware flash can leave the KAM-XL's host baud rate (`HBAUD`)
+different from what it was before -- observed directly: flashing at
+38400 left the unit answering at 38400 afterward, not back at the
+usual 19200. `kamxl_daemon.py` (and `KAMXL` itself) has no way to
+auto-detect this -- a baud mismatch doesn't produce garbled text or a
+clean error, it just looks like the KAM-XL never responds at all,
+since every byte is being misread. Check what the KAM-XL is actually
+set to with a plain serial terminal (e.g. `minicom`) before assuming
+anything else is wrong.
+
+If it's not what you expected, type `ABAUD` at the KAM-XL's *current*
+working baud rate, then hit `*` -- the KAM-XL uses that keystroke to
+autodetect and lock to whatever baud rate `*` was just sent at,
+letting you reset it to a known rate (e.g. reconnect your terminal at
+19200 first, then send `ABAUD` and `*`) without needing to already
+know or guess the right value. Once it's back to a known rate, either
+pass `kamxl_daemon.py --baud <rate>` to match, or set it back to the
+project's usual 19200 default so nothing else needs to change.
+
 ## General advice
 
 If something behaves differently than the manual says: trust the
