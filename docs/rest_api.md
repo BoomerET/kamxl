@@ -344,32 +344,31 @@ time -- the endpoint's socket timeout budget scales with
 (handshake, proposals, message bodies), plus `connect_timeout` and a
 margin for `disconnect_station()`.
 
-**Receive-only, plain-ASCII FBB tier only, partially verified against
-a real gateway.** See `winlink.py`'s module docstring and
+**Receive-only, both ASCII and B2 protocol tiers.** See `winlink.py`'s
+module docstring, `lzhuf.py`'s module docstring, and
 [api_reference.md](api_reference.md#winlink-milestone-8) for the full
-scope writeup -- in short: no compression, no outbound send yet, and
-messages come back with a plain title/body rather than Winlink's
-richer structured header (a real consequence of the ASCII-only
-choice, not a bug). The secure-login response algorithm is confirmed
+scope writeup. The secure-login response algorithm is confirmed
 correct independent of real-hardware testing, verified against a
 trusted open-source reference implementation's own test vectors. A
-live test against a real gateway (KD5EOC-10) also confirmed the SID
+live test against a real gateway (KD5EOC-10) confirmed the SID
 exchange and secure-login challenge-response work end-to-end, and
-surfaced a real KAM-XL echo-back bug (since fixed) in how "the
-gateway has nothing to propose" was detected -- see
-api_reference.md's writeup for details. Proposal parsing against an
-actual populated mailbox is still unverified.
+surfaced two real bugs (both since fixed): a KAM-XL echo-back
+mistaken for a gateway reply, and a hang when the gateway disconnected
+mid-exchange because it required B2 support -- see api_reference.md's
+writeup for both.
 
-A second test against the same gateway found it requires B2 protocol
-support and disconnects rather than falling back to plain ASCII for
-this client -- `/winlink/check` now surfaces that as a clear error
-message (`"KD5EOC-10 disconnected before completing the Winlink
-exchange (\"*** [3] Use B2 protocol - Disconnecting ...\") -- ..."`)
-instead of the confusing timeout it used to produce. See
-api_reference.md's writeup for the full story. Practically, this
-means mail can't currently be retrieved from a gateway that enforces
-B2 -- only from one willing to speak plain-ASCII FBB to a
-non-B2 client.
+**That second finding is what prompted implementing real B2 support**:
+`winlink.py` now claims `B2` in its own SID, and `check_winlink_mail()`
+can retrieve mail proposed either the legacy ASCII way (`FB`, plain
+title+body) or via B2 (`FC`, LZHUF-compressed, binary-framed,
+carrying Winlink's real structured header and attachment metadata --
+see api_reference.md's `WinlinkMessage` writeup for the field
+differences). The LZHUF codec (new `lzhuf.py` module) is cross-checked
+against two independent reference implementations and round-trips
+correctly in tests, but real end-to-end interop with a real gateway's
+own B2-compressed bytes remains unverified -- that needs an account
+with actual mail waiting on a B2-enforcing gateway, which hasn't
+happened yet.
 
 ## Testing
 

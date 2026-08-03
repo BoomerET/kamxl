@@ -130,14 +130,52 @@ protocol (`winlink.py`) -- a real, separately-documented protocol
 not something derived from the KAM-XL manual.
 
 **Scope, chosen deliberately** (see PROJECT.md's milestone 8
-writeup): plain ASCII FBB tier only (no LZHUF compression, no binary
-framing -- `winlink.py` never claims `B`/`B1`/`B2` in its own SID, so
-a real gateway will never propose a compressed message to us) and
-receive-only (never proposes an outbound message of its own). One
-practical consequence of the ASCII-only choice: per the B2F spec,
-messages received this way carry only a plain title + body, not
-Winlink's richer structured address header (Mid/Date/From/To/Subject/
-attachments) -- that header is only transmitted to B2-capable clients.
+writeup): receive-only (never proposes an outbound message of its
+own) -- this can't send mail yet. Originally ASCII-only (no
+compression), extended to also support Winlink's own **B2 protocol**
+after a real gateway (KD5EOC-10) was found to require it and
+disconnect rather than fall back to plain ASCII (see
+`parse_disconnect_reason()`'s docstring). `winlink.py`'s SID now
+claims `B2F$` -- a strict superset of the old `F$`-only claim, so
+ASCII-only gateways still work exactly as before.
+
+A gateway now sends either a legacy ASCII (`FB`) proposal or a B2
+(`FC`) proposal, and this module handles both -- but their resulting
+`WinlinkMessage` differs in richness. An ASCII message only ever
+carries a plain title + body (per the B2F spec, "if a station cannot
+support the B2 protocol then only the message body is transmitted and
+information content of the header is lost"). A B2 message carries the
+real structured Winlink header (`Mid`/`Date`/`Type`/`From`/`To`/`Cc`/
+`Subject`) plus attachment metadata (name + size only -- see
+"Attachment scope" below) -- exposed via `WinlinkMessage`'s optional
+fields (`mid`, `date`, `msg_type`, `from_`, `to`, `cc`, `subject`,
+`attachments`), all `None`/empty for an ASCII message. If a single
+proposal block ever mixes both kinds, `check_winlink_mail()` raises
+`winlink.WinlinkProtocolError` rather than attempting to interleave
+two different wire formats -- not expected in practice, since a real
+Winlink gateway that's negotiated B2 with us is expected to use `FC`
+exclusively (this mirrors wl2k-go's own scope choice -- even that
+mature, widely-used Winlink client library doesn't bother implementing
+the legacy ASCII/B1 proposal codes at all).
+
+**B2's wire format**, researched and implemented from the same two
+sources used throughout this module: the B2F spec's "Message
+Structure" section (the structured header format) and f6fbb.org's
+"Binary Compressed Forward Version 1" section plus wl2k-go's
+`fbb/b2f.go` (the actual binary transport -- `SOH`-prefixed header,
+`STX`-chunked compressed data, `EOT` + checksum; see
+`winlink.parse_b2_blocks()`). The compressed payload itself uses
+LZHUF compression, implemented in the new **`lzhuf.py`** module --
+see its own module docstring for the two independent reference
+implementations (the official Winlink Dev Team's VB.NET source and
+wl2k-go's Go source) this was cross-checked against.
+
+**Attachment scope, chosen deliberately:** a B2 message's attachments
+are parsed for name and size (`Attachment`) but their file contents
+are never extracted or exposed -- avoids a file-storage design
+question that hasn't been asked for yet. Extracting the bytes
+themselves would be straightforward if that's ever wanted (they're
+just more bytes in the same decompressed buffer, per the spec).
 
 **Partially verified against a real RMS gateway.** Built from the
 spec and cross-checked against a trusted open-source reference
@@ -186,14 +224,24 @@ when one's present, and skips the now-pointless `disconnect_station()`
 call. See `parse_disconnect_reason()`'s docstring and
 `tests/test_winlink.py`'s
 `test_gateway_disconnect_mid_session_raises_clear_error` for the full
-story. Note this means the current implementation cannot actually
-retrieve mail from a gateway that enforces B2 -- that would require
-implementing the B2 protocol tier, a real scope expansion beyond this
-milestone's deliberate ASCII-only choice.
+story. That was the prompt for implementing real B2 support (above) --
+`check_winlink_mail()` can now actually retrieve mail from a gateway
+that enforces B2, rather than only being able to name why it couldn't.
+
+**Still unverified: real end-to-end interop with a real gateway's own
+B2-compressed bytes.** `lzhuf.py`'s codec is cross-checked against two
+independent reference implementations and round-trips its own
+compressed output correctly (`tests/test_lzhuf.py`), and the binary
+block framing and encapsulated-header parsing are unit-tested against
+hand-built fixtures -- but none of this has been exercised against a
+real captured B2 message yet (that needs an account with actual mail
+waiting on a B2-enforcing gateway, which hasn't happened). Expect the
+same kind of correction this project's other first-drafts needed once
+tested for real.
 
 | Method | Description |
 | --- | --- |
-| `check_winlink_mail(gateway, password, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway` (an RMS Packet station's callsign), complete secure login if challenged, and download up to one proposal block (5 messages) of waiting mail. `mycall` defaults to the KAM-XL's `MYCALL` (first port value). Returns a list of `WinlinkMessage`, empty if nothing's waiting. Raises `KAMConnectionError` if the gateway hangs up mid-exchange (e.g. it requires B2 protocol support). `password` is never logged. |
+| `check_winlink_mail(gateway, password, mycall=None, connect_timeout=60, read_timeout=30)` | Connect to `gateway` (an RMS Packet station's callsign), complete secure login if challenged, and download up to one proposal block (5 messages) of waiting mail -- ASCII or B2, whichever the gateway proposes. `mycall` defaults to the KAM-XL's `MYCALL` (first port value). Returns a list of `WinlinkMessage`, empty if nothing's waiting. Raises `KAMConnectionError` if the gateway hangs up mid-exchange; `winlink.WinlinkProtocolError` if a block mixes ASCII and B2 proposals, or a B2 message fails to decompress/checksum-verify. `password` is never logged. |
 
 ### Exceptions
 
@@ -205,6 +253,16 @@ All inherit from `KAMError`.
 | `KAMCommandError` | The KAM-XL responded with `EH?`. |
 | `KAMTimeoutError` | No expected response arrived in time. |
 | `KAMConnectionError` | An AX.25 CONNECT failed (retry exceeded, busy, or an immediate disconnect), or `check_winlink_mail()` detected the gateway hanging up mid-exchange (see the Winlink section above). |
+
+`winlink.WinlinkProtocolError` (plain `Exception`, not a `KAMError` --
+it's a B2F/FBB protocol-layer error, not a KAM-XL/serial one) is
+raised by `check_winlink_mail()` for a genuine B2 binary-framing
+violation: a checksum mismatch, an unexpected byte where `STX`/`EOT`
+was expected, or a proposal block mixing ASCII and B2 messages (not
+supported -- see the Winlink section above). `lzhuf.LZHUFError` (and
+its `lzhuf.ChecksumError` subclass) can also surface through
+`check_winlink_mail()`, wrapped in a `WinlinkProtocolError` naming the
+failing message's MID.
 
 ## Commands
 
@@ -386,13 +444,13 @@ a client is actually watching.
 | `list_stations()` | All known stations, sorted by callsign. |
 | `get_station(callsign)` | One station, or `None` if never heard. |
 
-## `Proposal` / `WinlinkMessage`
+## `Proposal` / `B2Proposal` / `WinlinkMessage`
 
-*(from `winlink.py`, milestone 8)*
+*(from `winlink.py`, milestone 8; B2 support added afterward)*
 
 ```python
 @dataclass(frozen=True)
-class Proposal:
+class Proposal:                 # legacy ascii "FB" proposal
     msg_type: str   # 'P' private, 'B' bulletin
     sender: str
     via: str         # "BBS of recipient" (@) field
@@ -403,29 +461,71 @@ class Proposal:
 
 
 @dataclass(frozen=True)
-class WinlinkMessage:
-    title: str       # plain FBB title line -- NOT a structured
-                      # Winlink address header, see below
-    body: str
-    proposal: Proposal
+class B2Proposal:               # B2 "FC" proposal (encapsulated message)
+    msg_type: str   # 'EM' encapsulated message, 'CM' control message
+    mid: str
+    size: int             # uncompressed size
+    compressed_size: int
     raw: str
+
+
+@dataclass(frozen=True)
+class Attachment:               # metadata only -- see "Attachment scope" above
+    name: str
+    size: int
+
+
+@dataclass(frozen=True)
+class WinlinkMessage:
+    title: str
+    body: str
+    proposal: Union[Proposal, B2Proposal]
+    raw: str
+
+    # Populated only for a B2 message -- None/empty for legacy ascii.
+    mid: Optional[str] = None
+    date: Optional[str] = None
+    msg_type: Optional[str] = None
+    from_: Optional[str] = None
+    to: List[str] = field(default_factory=list)
+    cc: List[str] = field(default_factory=list)
+    subject: Optional[str] = None
+    attachments: List[Attachment] = field(default_factory=list)
 ```
 
-`Proposal` is one "FB ..." line -- the gateway offering a message.
-`WinlinkMessage` pairs the downloaded body with the `Proposal` that
-offered it. Because this module only claims the plain-ASCII FBB tier
-(deliberately, see PROJECT.md milestone 8), `title` is just a plain
-FBB title line, not Winlink's richer Mid/Date/From/To/Subject header
--- that's only sent to clients claiming B2 support.
+`Proposal` is one legacy "FB ..." line. `B2Proposal` is one B2 "FC
+..." line -- carries no sender/recipient itself, since that lives in
+the encapsulated message's own header once decompressed.
+`WinlinkMessage` pairs the downloaded content with whichever proposal
+offered it; its extra fields are only meaningful for a B2 message
+(see the Winlink section above for the ASCII/B2 richness difference).
 
 | Function | Description |
 | --- | --- |
 | `secure_login_response(challenge, password)` | The 8-digit response to a `;PQ:` secure-login challenge. Ported from `wl2k-go` and verified against its own test vectors -- see `SECURE_LOGIN_TEST_VECTORS`. Case-sensitive on `password`, matching the reference exactly. |
 | `parse_secure_challenge(line)` | Parse a `;PQ: <digits>` line, or `None`. |
-| `parse_sid(line)` / `build_sid(app_name, app_version)` | Parse a remote SID line, or build our own (always `F$` -- ASCII-basic + BID only). |
+| `parse_sid(line)` / `build_sid(app_name, app_version)` | Parse a remote SID line, or build our own (`B2F$` -- B2 + ASCII-basic + BID). |
 | `sid_has_code(sid, code)` | Whether a parsed `RemoteSID` advertises a given feature code. |
 | `build_handshake_response(mycall, app_name, app_version, secure_challenge=None, password=None)` | Build the `;FW:`/SID/`;PR:` block to send after reading the remote's handshake. Raises `ValueError` if a challenge was given with no password. |
-| `parse_proposal(line)` / `parse_proposals(text)` | Parse one or all `FB ...` proposal lines. |
+| `parse_proposal(line)` / `parse_proposals(text)` | Parse one or all legacy `FB ...` proposal lines. |
+| `parse_b2_proposal(line)` / `parse_any_proposals(text)` | Parse one `FC ...` proposal, or every proposal (either kind) out of a block of text, in order. |
 | `build_fs_line(count, accept=True)` | Build an `FS ...` line accepting (or rejecting) every proposed message -- MVP scope, no per-message selection yet. |
-| `has_end_of_block_marker(text)` / `has_fq_marker(text)` | Whether text contains `F>`/`FF` (block done) or `FQ` (session ending). |
-| `split_message_blocks(text, count)` / `parse_message_block(raw_text, proposal)` | Split Ctrl-Z-delimited message bodies out of raw text, and turn one into a `WinlinkMessage`. |
+| `has_end_of_block_marker(text)` / `has_fq_marker(text)` | Whether text contains `F>` (block done) or `FQ` (session ending). |
+| `parse_disconnect_reason(text)` | Whether text contains the KAM-XL's own `*** DISCONNECTED` banner, and the gateway's stated reason if any. |
+| `split_message_blocks(text, count)` / `parse_message_block(raw_text, proposal)` | Split Ctrl-Z-delimited legacy ascii message bodies out of raw text, and turn one into a `WinlinkMessage`. |
+| `parse_b2_blocks(data, count)` | Parse up to `count` binary-framed (`SOH`/`STX`/`EOT`) message blocks out of raw bytes -- returns a list of `B2Block` (`title`, `offset`, `compressed_data`). Raises `WinlinkProtocolError` on a checksum mismatch or unexpected byte. |
+| `parse_encapsulated_message(data)` | Parse one decompressed B2 message per the B2F spec's "Message Structure" section, returning an `EncapsulatedMessage` (`mid`, `date`, `msg_type`, `from_`, `to`, `cc`, `subject`, `mbo`, `body`, `attachments`, `extra_headers`). |
+| `winlink_message_from_encapsulated(proposal, encapsulated)` | Build a `WinlinkMessage` from a `B2Proposal` and its parsed `EncapsulatedMessage`. |
+
+## `lzhuf` (LZHUF compression)
+
+*(new module, added alongside B2 support -- see its own module
+docstring for the two independent reference implementations this was
+cross-checked against)*
+
+| Function | Description |
+| --- | --- |
+| `compress(data)` / `decompress(data)` | Plain LZHUF compress/decompress: `[4-byte little-endian length][compressed bytes]`, no checksum. |
+| `compress_b2(data)` / `decompress_b2(data)` | The wire format Winlink actually uses: `[2-byte CRC-16][4-byte length][compressed bytes]`. `decompress_b2()` raises `ChecksumError` on a mismatch. |
+| `LZHUFError` | Base exception (data too short to contain its length/CRC header). |
+| `ChecksumError(LZHUFError)` | The B2 CRC-16 header didn't match the compressed data. |

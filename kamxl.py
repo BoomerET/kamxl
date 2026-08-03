@@ -6,19 +6,27 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
+import lzhuf
+
 from packet import Packet, PacketParser
 from pbbs import PBBSMessage, PBBSMessageSummary, parse_message, parse_message_list
 from winlink import (
+    B2Proposal,
+    Proposal,
     WinlinkMessage,
+    WinlinkProtocolError,
     build_fs_line,
     build_handshake_response,
     has_end_of_block_marker,
     has_fq_marker,
+    parse_any_proposals,
+    parse_b2_blocks,
     parse_disconnect_reason,
+    parse_encapsulated_message,
     parse_message_block,
-    parse_proposals,
     parse_secure_challenge,
     split_message_blocks,
+    winlink_message_from_encapsulated,
 )
 
 
@@ -1187,6 +1195,47 @@ class KAMXL:
             errors="replace"
         )
 
+    def read_connected_bytes(
+        self,
+        timeout: float = 5
+    ) -> bytes:
+        """
+        Collect connected-mode data for up to timeout seconds, as raw
+        bytes -- unlike read_connected(), does NOT decode through
+        ASCII.
+
+        Needed for Winlink's B2 binary message-body transfer (milestone
+        8 extension): LZHUF-compressed bytes span the full 0-255 range,
+        and read_connected()'s ``errors="replace"`` ASCII decode would
+        silently replace every byte >= 0x80 (roughly half of all
+        possible compressed byte values) with U+FFFD, irreversibly
+        corrupting the data. This was found while designing B2 support,
+        not from a hardware test -- a real gap in the existing
+        connected-mode read path, which was built for genuinely
+        text-only protocols (PBBS commands, Winlink's own ASCII
+        handshake/proposal lines) and was never exercised with a real
+        binary payload until B2 needed one. Everything in a Winlink
+        exchange BEFORE the actual compressed message bytes (the
+        handshake, the proposal lines themselves, even a "FC ..." B2
+        proposal line) is still plain ASCII and continues to use
+        read_connected() unchanged -- only the binary block framing
+        after an "FS" accept needs this.
+        """
+        self._require_connection()
+
+        data = bytearray()
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            chunk = self.serial.read(
+                self.serial.in_waiting or 1
+            )
+
+            if chunk:
+                data.extend(chunk)
+
+        return bytes(data)
+
     def enter_command_mode(
         self,
         timeout: float = 5
@@ -1313,6 +1362,35 @@ class KAMXL:
 
         return text
 
+    def _poll_until_bytes(
+        self,
+        done: Callable[[bytes], bool],
+        timeout: float
+    ) -> bytes:
+        """
+        Bytes-returning analog of _poll_until(), for the one part of a
+        Winlink exchange that isn't plain text: the binary-framed B2
+        message body, after an "FS" accept for one or more B2Proposals
+        (milestone 8 extension -- see read_connected_bytes()'s
+        docstring for why this can't reuse the str-based _poll_until()
+        without corrupting data).
+        """
+        deadline = time.monotonic() + timeout
+        data = b""
+
+        while True:
+            remaining = deadline - time.monotonic()
+
+            if remaining <= 0:
+                break
+
+            data += self.read_connected_bytes(timeout=min(1.0, remaining))
+
+            if done(data):
+                break
+
+        return data
+
     def _collect_pbbs_response(self, timeout: float) -> str:
         """
         Collect connected-mode text from a PBBS command, stopping as
@@ -1395,19 +1473,25 @@ class KAMXL:
         return parse_message(text)
 
     # -----------------------------------------------------------------------
-    # Winlink (Milestone 8)
+    # Winlink (Milestone 8, extended with real B2 support)
     # -----------------------------------------------------------------------
     #
     # Connects to a real Winlink RMS Packet gateway over AX.25 and
     # downloads whatever mail is waiting -- receive-only for this
     # first pass (see winlink.py's module docstring for the full scope
-    # writeup: plain-ASCII FBB tier only, no compression, single
-    # message block per call, no outbound send yet). Built from the
-    # public B2F/FBB specs and a trusted open-source reference
-    # implementation, UNVERIFIED against a real gateway -- expect
-    # adjustment once actually tested, the same way pbbs.py's parsing
-    # was before Dave's real-hardware pass confirmed (and partially
-    # corrected) it.
+    # writeup: no outbound send yet, single message block per call).
+    # Now speaks both the plain-ASCII FBB tier (legacy Proposal/"FB")
+    # AND Winlink's own B2 extension (B2Proposal/"FC", LZHUF-compressed,
+    # binary-framed -- see lzhuf.py and winlink.py's B2 section) --
+    # added after a real gateway (KD5EOC-10) was found to require B2
+    # and disconnect rather than fall back to ASCII (see
+    # winlink.parse_disconnect_reason()'s docstring). Built from the
+    # public B2F/FBB specs and two independently-authored reference
+    # implementations cross-checked against each other (see lzhuf.py's
+    # module docstring) -- still UNVERIFIED against a real populated
+    # mailbox, expect adjustment once actually tested, the same way
+    # pbbs.py's parsing was before Dave's real-hardware pass confirmed
+    # (and partially corrected) it.
 
     def check_winlink_mail(
         self,
@@ -1424,6 +1508,17 @@ class KAMXL:
         winlink.py's module docstring for why. Never proposes an
         outbound message of our own (receive-only MVP scope) -- this
         can't be used to send mail yet.
+
+        Handles both plain-ASCII (legacy "FB") and B2 ("FC",
+        LZHUF-compressed) proposals -- whichever the gateway actually
+        sends is reflected in each returned WinlinkMessage's richness:
+        a B2 message carries the real structured header (subject,
+        from, to, cc, attachment metadata); a legacy ASCII message only
+        ever has a plain title and body (see winlink.py's module
+        docstring). Raises WinlinkProtocolError if a single block ever
+        mixes both kinds (not supported -- see winlink.py's "MIXED-
+        BATCH SCOPE LIMIT" note) or if a B2 message fails to
+        decompress/checksum-verify.
 
         ``mycall`` defaults to the KAM-XL's own MYCALL (its first port
         value, if MYCALL is a multi-port setting) -- this needs to
@@ -1523,24 +1618,80 @@ class KAMXL:
             if has_fq_marker(proposal_text):
                 return []
 
-            proposals = parse_proposals(proposal_text)
+            proposals = parse_any_proposals(proposal_text)
 
             if not proposals:
                 return []
 
+            is_b2 = any(isinstance(p, B2Proposal) for p in proposals)
+            is_legacy = any(isinstance(p, Proposal) for p in proposals)
+
+            if is_b2 and is_legacy:
+                # See winlink.py's module docstring, "MIXED-BATCH SCOPE
+                # LIMIT" -- not expected in practice against a real
+                # Winlink gateway, and not worth the complexity of
+                # interleaving two different wire formats to read back
+                # a scenario that can't currently be tested against
+                # anything real.
+                raise WinlinkProtocolError(
+                    "Gateway proposed a mix of legacy-ASCII (FB) and "
+                    "B2 (FC) messages in the same block -- not "
+                    "supported yet (see winlink.py's module docstring)"
+                )
+
             self.send_connected(build_fs_line(len(proposals)))
 
-            messages_text = self._poll_until(
-                lambda text: text.count("\x1a") >= len(proposals),
-                read_timeout
-            )
+            if is_b2:
+                messages_bytes = self._poll_until_bytes(
+                    lambda data: len(parse_b2_blocks(data, len(proposals)))
+                    >= len(proposals),
+                    read_timeout
+                )
 
-            logger.debug("winlink messages raw: %r", messages_text)
+                logger.debug("winlink b2 messages raw: %r", messages_bytes)
 
-            _raise_if_gateway_hung_up(messages_text)
+                # Lossy on purpose -- this is only ever used to spot a
+                # plain-ASCII marker substring (the KAM-XL's own
+                # disconnect banner), never to recover real data, so
+                # losing information on non-ASCII compressed bytes
+                # doesn't matter here (see read_connected_bytes()'s
+                # docstring for why that lossy decode is NOT
+                # acceptable for the actual message bytes themselves).
+                _raise_if_gateway_hung_up(
+                    messages_bytes.decode("ascii", errors="replace")
+                )
+
+                b2_blocks = parse_b2_blocks(messages_bytes, len(proposals))
+            else:
+                messages_text = self._poll_until(
+                    lambda text: text.count("\x1a") >= len(proposals),
+                    read_timeout
+                )
+
+                logger.debug("winlink messages raw: %r", messages_text)
+
+                _raise_if_gateway_hung_up(messages_text)
         finally:
             if not gateway_already_disconnected:
                 self.disconnect_station()
+
+        if is_b2:
+            messages = []
+
+            for block, proposal in zip(b2_blocks, proposals):
+                try:
+                    raw = lzhuf.decompress_b2(block.compressed_data)
+                    encapsulated = parse_encapsulated_message(raw)
+                except lzhuf.LZHUFError as exc:
+                    raise WinlinkProtocolError(
+                        f"Failed to decompress B2 message {proposal.mid!r}: {exc}"
+                    ) from exc
+
+                messages.append(
+                    winlink_message_from_encapsulated(proposal, encapsulated)
+                )
+
+            return messages
 
         blocks = split_message_blocks(messages_text, len(proposals))
 

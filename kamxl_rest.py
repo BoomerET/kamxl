@@ -678,11 +678,37 @@ WINLINK_HTML = """<!doctype html>
     var html = "";
 
     messages.forEach(function (m) {
-      var hdr = "FROM " + m.proposal.sender + "  (" + m.proposal.mid + ")";
+      // B2 ("FC") messages carry the real structured header (from_/to/
+      // cc/mid); legacy ascii ("FB") messages only ever have whatever
+      // the proposal line itself carried (sender/mid) -- see
+      // winlink.py's module docstring for why the two tiers differ.
+      var hdr;
+
+      if (m.from_) {
+        hdr = "FROM " + m.from_ + " TO " + (m.to || []).join(", ");
+
+        if (m.cc && m.cc.length) {
+          hdr += " CC " + m.cc.join(", ");
+        }
+
+        hdr += "  (" + m.mid + ")";
+      } else {
+        hdr = "FROM " + m.proposal.sender + "  (" + m.proposal.mid + ")";
+      }
 
       html += '<div class="msg"><div class="hdr">' + escapeHtml(m.title) +
         "</div><div class=\\"hdr\\">" + escapeHtml(hdr) + "</div>" +
-        '<div class="body">' + escapeHtml(m.body) + "</div></div>";
+        '<div class="body">' + escapeHtml(m.body) + "</div>";
+
+      if (m.attachments && m.attachments.length) {
+        var names = m.attachments.map(function (a) {
+          return a.name + " (" + a.size + " bytes)";
+        }).join(", ");
+
+        html += '<div class="hdr">Attachments: ' + escapeHtml(names) + "</div>";
+      }
+
+      html += "</div>";
     });
 
     results.innerHTML = html;

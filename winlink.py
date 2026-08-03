@@ -73,22 +73,64 @@ claims "B"/"B1"/"B2" in its own SID -- see parse_disconnect_reason()'s
 docstring for the full story and the real bug that test also
 surfaced (check_winlink_mail() used to hang and raise a confusing
 KAMTimeoutError instead of a clear error when this happened, since
-fixed). Practically, this means the current implementation cannot
-retrieve mail from a gateway that enforces B2 -- only from one
-willing to speak plain-ASCII FBB to a non-B2 client.
+fixed). That finding is what prompted adding real B2 support below.
+
+B2 SUPPORT (this module now claims "B2" in its own SID -- see
+build_sid()): the plain-ASCII scope note above is now historical for
+the SID itself, but still describes the "FB" ascii-tier proposal path,
+kept for any non-Winlink FBB station that might still use it (a B2
+station must stay backward-compatible with ascii/B1 per spec). A real
+Winlink gateway that negotiates B2 with us is expected to use the "FC"
+proposal instead (Winlink's own "encapsulated message" extension --
+see B2Proposal, parse_b2_blocks(), and EncapsulatedMessage below),
+which DOES carry the full structured address header (Mid/Date/From/
+To/Cc/Subject) plus attachment metadata that the ascii tier loses.
+B2 messages are LZHUF-compressed (see lzhuf.py) and sent using binary
+SOH/STX/EOT block framing, not the ascii tier's plain title+^Z text --
+a real, separate wire format, researched from the same two sources
+used for the compression codec itself: the official B2F spec's
+"Binary Compressed Forward Version 1" section
+(http://www.f6fbb.org/protocole.html) and wl2k-go's fbb/b2f.go, which
+independently confirm the same SOH-header / STX-chunk / EOT+checksum
+framing.
+
+ATTACHMENT SCOPE (deliberately chosen, see PROJECT.md): this first B2
+pass parses and exposes the real structured header and message body,
+and reports each attachment's name and size (Attachment, below) -- but
+does NOT extract or expose attachment file contents. Extracting
+attachment bytes is mechanically simple (they're just more bytes in
+the same decompressed buffer, per the B2F "Message Structure" spec)
+but deliberately out of scope for now, to avoid taking on a
+file-storage design question that hasn't been asked for yet.
+
+MIXED-BATCH SCOPE LIMIT: if a single proposal block ever contains a
+mix of legacy ascii ("FB") and B2 ("FC") proposals, this module doesn't
+attempt to interleave the two different wire formats needed to read
+them back -- check_winlink_mail() raises a clear error instead. This
+is expected to be rare-to-never in practice: a real Winlink CMS/RMS
+gateway that negotiates B2 with us is expected to use FC exclusively
+for its own mail (this mirrors wl2k-go's own scope choice -- its
+parseProposal() has a literal "// TODO: implement" for the legacy
+ascii/B1 proposal codes, meaning even that mature, widely-used real
+Winlink client doesn't bother with mixed-tier handling either).
 
 Proposal parsing and message-body extraction are still unverified
 against a real populated mailbox -- that needs an account with
 actual mail waiting to test, which hasn't happened yet. Expect
 the same kind of further correction packet.py's HEADER_RE and
-pbbs.py's parsing both needed after their own first real tests.
+pbbs.py's parsing both needed after their own first real tests. The
+LZHUF codec itself (lzhuf.py) is cross-checked against two independent
+reference implementations, but real end-to-end interop with a real
+gateway's own B2-compressed bytes hasn't been confirmed yet either.
 """
 
 import hashlib
 import re
 
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Union
+
+import lzhuf
 
 
 # -----------------------------------------------------------------------
@@ -212,13 +254,24 @@ def build_sid(app_name: str, app_version: str) -> str:
     """
     Our own outgoing SID line.
 
-    Deliberately claims only "F" (plain FBB ASCII-basic proposals) and
-    "$" (BID/MID field, always present in every proposal line this
-    module sends or expects) -- not "B"/"B1"/"B2" (compressed
-    protocol), since this module doesn't implement compression. "$"
-    must be the last character per the SID format.
+    Claims "B2" (Winlink's own compressed/encapsulated-message
+    extension -- see B2Proposal and parse_b2_blocks()), "F" (plain FBB
+    ASCII-basic proposals, kept for a non-Winlink FBB station that
+    isn't B2-aware), and "$" (BID/MID field, always present in every
+    proposal line this module sends or expects -- must be the last
+    character per the SID format).
+
+    This used to claim only "F$" (see PROJECT.md's milestone 8
+    writeup) until a real gateway (KD5EOC-10) was found to require B2
+    and disconnect rather than fall back to ASCII for a client that
+    doesn't advertise it -- see parse_disconnect_reason()'s docstring.
+    Claiming B2 is a strict superset of the old F-only behavior: a
+    gateway that only understands plain ASCII will simply propose "FB"
+    messages to us the same as before (a B2-capable station must stay
+    backward-compatible with ascii/B1 clients per spec), so there's no
+    real downside to always claiming it now.
     """
-    return f"[{app_name}-{app_version}-F$]"
+    return f"[{app_name}-{app_version}-B2F$]"
 
 
 # -----------------------------------------------------------------------
@@ -337,6 +390,106 @@ def parse_proposals(text: str) -> List[Proposal]:
     return proposals
 
 
+class WinlinkProtocolError(Exception):
+    """
+    A genuine B2 binary-framing protocol violation -- a bad checksum
+    or an unexpected byte where SOH/STX/EOT was expected. NOT raised
+    for "not enough data has arrived yet" (that's handled by returning
+    fewer parsed blocks/messages than asked for, the same pattern
+    split_message_blocks() already uses for the ascii tier), only for
+    data that's actually malformed once it's fully in hand.
+    """
+
+
+# -----------------------------------------------------------------------
+# B2 proposals (FC lines -- Winlink's own encapsulated-message
+# extension, see the module docstring's "B2 SUPPORT" section)
+# -----------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class B2Proposal:
+    """
+    One "FC" proposal line -- the gateway offering us one Winlink
+    encapsulated message. Unlike the plain-ascii Proposal, this line
+    carries no sender/recipient itself -- that lives inside the
+    encapsulated message's own structured header once decompressed
+    (see EncapsulatedMessage), which is the whole point of B2.
+
+    ``msg_type`` is "EM" (encapsulated message) or "CM" (Winlink
+    control message -- not a real user message; this module doesn't
+    do anything special with these beyond parsing the proposal line).
+    ``size`` is the uncompressed message size; ``compressed_size`` is
+    how many bytes to expect over the wire for it.
+    """
+
+    msg_type: str
+    mid: str
+    size: int
+    compressed_size: int
+    raw: str
+
+
+# "FC EM TJKYEIMMHSRB 527 123 0" -- Type, MID, U-Size, C-Size, and a
+# trailing field observed in real captured examples (wl2k-go's own
+# proposal.go docstring shows this exact shape) that's always "0" and
+# not documented in the B2F spec itself -- tolerated but ignored.
+_B2_PROPOSAL_RE = re.compile(
+    r"^FC\s+(?P<type>EM|CM)\s+"
+    r"(?P<mid>\S+)\s+"
+    r"(?P<size>\d+)\s+"
+    r"(?P<csize>\d+)"
+    r"(?:\s+\d+)?\s*$"
+)
+
+
+def parse_b2_proposal(line: str) -> Optional[B2Proposal]:
+    """
+    Parse one "FC ..." proposal line. Returns None if this line isn't
+    a B2 proposal (callers should skip it, not treat it as an error).
+    """
+    match = _B2_PROPOSAL_RE.match(line.strip())
+
+    if match is None:
+        return None
+
+    return B2Proposal(
+        msg_type=match.group("type"),
+        mid=match.group("mid"),
+        size=int(match.group("size")),
+        compressed_size=int(match.group("csize")),
+        raw=line.strip(),
+    )
+
+
+def parse_any_proposals(text: str) -> List[Union[Proposal, B2Proposal]]:
+    """
+    Parse every proposal line -- legacy ascii "FB ..." or B2
+    encapsulated "FC ..." -- out of a block of text, in the order they
+    appear. A gateway that negotiated B2 with us (this module's SID
+    now claims it -- see build_sid()) is expected to use "FC" for real
+    Winlink mail; "FB" support is kept only for a non-Winlink FBB
+    station that might still propose the old way (a B2 station must
+    stay backward-compatible with ascii/B1 clients per spec).
+    """
+    proposals: List[Union[Proposal, B2Proposal]] = []
+
+    for line in text.splitlines():
+        line = line.strip()
+
+        proposal = parse_proposal(line)
+
+        if proposal is not None:
+            proposals.append(proposal)
+            continue
+
+        b2_proposal = parse_b2_proposal(line)
+
+        if b2_proposal is not None:
+            proposals.append(b2_proposal)
+
+    return proposals
+
+
 def build_fs_line(count: int, accept: bool = True) -> str:
     """
     Build an "FS ..." response line accepting (or rejecting) every
@@ -435,25 +588,328 @@ def parse_disconnect_reason(text: str) -> Optional[str]:
 
 
 # -----------------------------------------------------------------------
+# B2 binary block framing (SOH/STX/EOT) -- carries LZHUF-compressed
+# encapsulated messages, see the module docstring's "B2 SUPPORT" note
+# -----------------------------------------------------------------------
+
+_SOH = 0x01
+_STX = 0x02
+_EOT = 0x04
+
+
+@dataclass(frozen=True)
+class B2Block:
+    """
+    One binary-framed message block, still LZHUF-compressed -- the
+    wire format a B2Proposal's message arrives in once accepted (see
+    parse_b2_blocks()). ``title`` comes from the SOH header itself
+    (distinct from -- and sometimes identical to -- the encapsulated
+    message's own Subject: header field once decompressed).
+    ``offset`` is always 0 for a fresh (non-resumed) transfer, which is
+    all this module supports.
+    """
+
+    title: str
+    offset: int
+    compressed_data: bytes
+
+
+def parse_b2_blocks(data: bytes, count: int) -> List[B2Block]:
+    """
+    Parse up to ``count`` binary-framed (SOH/STX/EOT) message blocks
+    out of raw bytes received after sending an "FS" line accepting one
+    or more B2Proposals. Sources (independently cross-checked before
+    writing this, same standard as lzhuf.py): f6fbb.org's "Binary
+    Compressed Forward Version 1" section, and wl2k-go's
+    fbb/b2f.go:readCompressed() -- both describe the identical framing:
+
+        <SOH><header length><title>\\0<offset>\\0
+        (<STX><chunk length><compressed bytes>)*
+        <EOT><8-bit two's-complement checksum of all chunk bytes>
+
+    Returns fewer than ``count`` blocks if ``data`` doesn't contain
+    that many complete blocks yet -- same "poll until you have enough"
+    contract as split_message_blocks(), so callers can feed this a
+    growing buffer as more arrives. Raises WinlinkProtocolError on a
+    checksum mismatch or an unexpected byte within a block that IS
+    otherwise fully present -- that's real corruption, not "not here
+    yet" (per the B2F spec, a real gateway disconnects on a checksum
+    failure; this module surfaces it as an exception instead so the
+    caller can decide what to do).
+    """
+    blocks: List[B2Block] = []
+    pos = 0
+
+    while len(blocks) < count:
+        if pos >= len(data) or data[pos] != _SOH:
+            break
+
+        if pos + 1 >= len(data):
+            break
+
+        header_len = data[pos + 1]
+        header_start = pos + 2
+        header_end = header_start + header_len
+
+        if header_end > len(data):
+            break
+
+        header_bytes = data[header_start:header_end]
+        parts = header_bytes.split(b"\x00")
+
+        if len(parts) < 2:
+            break
+
+        title = parts[0].decode("latin-1")
+
+        try:
+            offset = int(parts[1])
+        except ValueError:
+            break
+
+        cursor = header_end
+        payload = bytearray()
+        block_done = False
+
+        while not block_done:
+            if cursor >= len(data):
+                return blocks
+
+            marker = data[cursor]
+
+            if marker == _STX:
+                if cursor + 1 >= len(data):
+                    return blocks
+
+                length = data[cursor + 1]
+
+                if length == 0:
+                    length = 256
+
+                chunk_start = cursor + 2
+                chunk_end = chunk_start + length
+
+                if chunk_end > len(data):
+                    return blocks
+
+                payload.extend(data[chunk_start:chunk_end])
+                cursor = chunk_end
+            elif marker == _EOT:
+                if cursor + 1 >= len(data):
+                    return blocks
+
+                checksum = data[cursor + 1]
+                computed = (-sum(payload)) & 0xFF
+
+                if computed != checksum:
+                    raise WinlinkProtocolError(
+                        f"B2 binary block {title!r}: checksum mismatch "
+                        f"(header says {checksum:#04x}, computed "
+                        f"{computed:#04x} over {len(payload)} bytes)"
+                    )
+
+                cursor += 2
+                pos = cursor
+                block_done = True
+            else:
+                raise WinlinkProtocolError(
+                    f"B2 binary block {title!r}: unexpected byte "
+                    f"{marker:#04x} (expected STX or EOT) at offset "
+                    f"{cursor}"
+                )
+
+        blocks.append(B2Block(title=title, offset=offset, compressed_data=bytes(payload)))
+
+    return blocks
+
+
+# -----------------------------------------------------------------------
+# Encapsulated messages (the structured header B2/FC gives us access
+# to -- see the B2F spec's "Message Structure" section)
+# -----------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class Attachment:
+    """
+    Metadata for one attachment on an encapsulated message -- name and
+    size only, per this module's deliberate attachment scope (see the
+    module docstring's "ATTACHMENT SCOPE" note). The attachment's
+    actual bytes are not extracted or exposed.
+    """
+
+    name: str
+    size: int
+
+
+@dataclass(frozen=True)
+class EncapsulatedMessage:
+    """
+    One decompressed B2/FC message, parsed per the B2F spec's "Message
+    Structure" section: an ASCII address header (CRLF-separated,
+    case-insensitive field names), a blank line, then the message body
+    (exactly ``Body:``'s declared length), then any number of
+    attachments (not extracted -- see Attachment).
+
+    Field names mirror the spec's own header names (``mid``, ``date``,
+    ``msg_type`` for "Type:", ``from_`` for "From:" -- "from" is a
+    Python keyword, ``to``/``cc`` as lists since either may repeat).
+    Any header field not recognized is preserved in ``extra_headers``
+    rather than silently dropped, in case a real gateway sends
+    something this parser doesn't yet know about -- the spec itself
+    says unrecognized fields "will be ignored and will not cause an
+    error," so preserving rather than validating is the deliberately
+    tolerant choice here (same philosophy as pbbs.py's message parsing
+    silently skipping lines it doesn't recognize).
+    """
+
+    mid: str
+    date: str
+    msg_type: str
+    from_: str
+    to: List[str]
+    cc: List[str]
+    subject: str
+    mbo: str
+    body: str
+    attachments: List[Attachment]
+    extra_headers: Dict[str, List[str]]
+
+
+def parse_encapsulated_message(data: bytes) -> EncapsulatedMessage:
+    """
+    Parse one decompressed B2/FC message (the output of
+    lzhuf.decompress_b2() on a B2Block's compressed_data).
+
+    Per the spec, the body is "limited to ASCII characters," but
+    wl2k-go's own header.go notes that real gateways (RMS Express, CMS)
+    routinely send ISO-8859-1 in practice -- decoded here as latin-1,
+    which maps every byte 0-255 to a unique code point and therefore
+    never raises on real-world 8-bit content (matching wl2k-go's
+    documented default charset).
+    """
+    text = data.decode("latin-1")
+    header_text, _, rest = text.partition("\r\n\r\n")
+
+    headers: Dict[str, List[str]] = {}
+
+    for line in header_text.splitlines():
+        if ":" not in line:
+            continue
+
+        key, _, value = line.partition(":")
+        headers.setdefault(key.strip().title(), []).append(value.strip())
+
+    def first(key: str, default: str = "") -> str:
+        values = headers.pop(key, None)
+        return values[0] if values else default
+
+    def all_values(key: str) -> List[str]:
+        return headers.pop(key, [])
+
+    mid = first("Mid")
+    date = first("Date")
+    msg_type = first("Type")
+    from_ = first("From")
+    to = all_values("To")
+    cc = all_values("Cc")
+    subject = first("Subject")
+    mbo = first("Mbo")
+
+    body_len_str = first("Body", "0")
+
+    try:
+        body_len = int(body_len_str)
+    except ValueError:
+        body_len = 0
+
+    body = rest[:body_len]
+
+    attachments = []
+
+    for file_entry in all_values("File"):
+        size_str, _, name = file_entry.partition(" ")
+
+        try:
+            size = int(size_str)
+        except ValueError:
+            continue
+
+        attachments.append(Attachment(name=name.strip(), size=size))
+
+    return EncapsulatedMessage(
+        mid=mid,
+        date=date,
+        msg_type=msg_type,
+        from_=from_,
+        to=to,
+        cc=cc,
+        subject=subject,
+        mbo=mbo,
+        body=body,
+        attachments=attachments,
+        extra_headers=headers,
+    )
+
+
+# -----------------------------------------------------------------------
 # Message bodies
 # -----------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class WinlinkMessage:
     """
-    One received message, in the ASCII-basic tier's reduced shape --
-    see the module docstring's "REAL CONSEQUENCE OF THAT CHOICE" note.
-    ``title`` is the message's first line (a subject-like line, not a
-    structured Winlink address header -- that's not present at this
-    protocol tier). ``proposal`` is the "FB ..." line that offered
-    this message, carrying whatever real metadata (sender/recipient/
-    mid) is actually available.
+    One received message. For a legacy ascii ("FB") message, only
+    ``title``/``body``/``proposal``/``raw`` are meaningful -- the rest
+    default to None/empty, since the ascii tier never carries a
+    structured header (see the module docstring's "REAL CONSEQUENCE OF
+    THAT CHOICE" note). For a B2 ("FC") encapsulated message, all
+    fields are populated from the real structured header (see
+    EncapsulatedMessage) -- this is the whole benefit of B2 over the
+    ascii tier. ``proposal`` is whichever proposal (Proposal or
+    B2Proposal) offered this message.
     """
 
     title: str
     body: str
-    proposal: Proposal
+    proposal: Union[Proposal, B2Proposal]
     raw: str
+
+    mid: Optional[str] = None
+    date: Optional[str] = None
+    msg_type: Optional[str] = None
+    from_: Optional[str] = None
+    to: List[str] = field(default_factory=list)
+    cc: List[str] = field(default_factory=list)
+    subject: Optional[str] = None
+    attachments: List[Attachment] = field(default_factory=list)
+
+
+def winlink_message_from_encapsulated(
+    proposal: B2Proposal,
+    encapsulated: EncapsulatedMessage,
+) -> WinlinkMessage:
+    """
+    Build a WinlinkMessage from a decompressed, parsed B2/FC message
+    (see parse_encapsulated_message()), pairing it with the B2Proposal
+    that offered it. ``title`` is the Subject header when present
+    (falling back to the raw MID if a message genuinely has no subject
+    -- better than an empty string for something meant to be shown to
+    a person).
+    """
+    return WinlinkMessage(
+        title=encapsulated.subject or encapsulated.mid,
+        body=encapsulated.body,
+        proposal=proposal,
+        raw=encapsulated.body,
+        mid=encapsulated.mid,
+        date=encapsulated.date,
+        msg_type=encapsulated.msg_type,
+        from_=encapsulated.from_,
+        to=encapsulated.to,
+        cc=encapsulated.cc,
+        subject=encapsulated.subject,
+        attachments=encapsulated.attachments,
+    )
 
 
 def split_message_blocks(text: str, count: int) -> List[str]:

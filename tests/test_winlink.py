@@ -20,8 +20,67 @@ import unittest
 
 from fakes import CannedSerial, make_kam  # noqa: F401 (path + fixture reuse)
 
+import lzhuf
 from kamxl import KAMConnectionError, KAMTimeoutError
 import winlink as w
+
+
+def _build_b2_block(title: str, compressed_data: bytes, offset: int = 0, chunk_size: int = 250) -> bytes:
+    """
+    Build one binary-framed (SOH/STX/EOT) message block the way a real
+    gateway would, for feeding to parse_b2_blocks() in tests. See
+    parse_b2_blocks()'s docstring for the format this mirrors.
+    """
+    title_bytes = title.encode("latin-1")
+    offset_bytes = str(offset).encode("ascii")
+    header = title_bytes + b"\x00" + offset_bytes + b"\x00"
+
+    block = bytes([0x01, len(header)]) + header
+
+    pos = 0
+
+    while pos < len(compressed_data):
+        chunk = compressed_data[pos:pos + chunk_size]
+        length_byte = len(chunk) if len(chunk) < 256 else 0
+        block += bytes([0x02, length_byte]) + chunk
+        pos += len(chunk)
+
+    checksum = (-sum(compressed_data)) & 0xFF
+    block += bytes([0x04, checksum])
+
+    return block
+
+
+def _build_encapsulated_message(
+    mid="12345_N0CALL",
+    date="2026/08/03 12:00",
+    msg_type="Private",
+    from_="N0CALL",
+    to=("AI6K",),
+    cc=(),
+    subject="Test B2 message",
+    mbo="KD5EOC",
+    body="Hello from B2!\r\n",
+    attachments=(),
+) -> bytes:
+    """
+    Build one raw (decompressed) encapsulated message per the B2F
+    spec's "Message Structure" section, for round-tripping through
+    parse_encapsulated_message() in tests.
+    """
+    lines = [f"Mid: {mid}", f"Date: {date}", f"Type: {msg_type}", f"From: {from_}"]
+    lines += [f"To: {addr}" for addr in to]
+    lines += [f"Cc: {addr}" for addr in cc]
+    lines += [f"Subject: {subject}", f"Mbo: {mbo}", f"Body: {len(body)}"]
+    lines += [f"File: {len(data)} {name}" for name, data in attachments]
+
+    header = "\r\n".join(lines) + "\r\n"
+    raw = (header + "\r\n" + body).encode("latin-1")
+
+    for _name, data in attachments:
+        raw += data + b"\r\n"
+
+    return raw
 
 
 class SecureLoginResponseTests(unittest.TestCase):
@@ -81,19 +140,22 @@ class SIDTests(unittest.TestCase):
         self.assertIsNone(w.parse_sid("Welcome to WL2K"))
         self.assertIsNone(w.parse_sid("FB P F6FBB FC1GHV FC1MVP 1_A 10"))
 
-    def test_build_sid_only_claims_ascii_basic_and_bid(self):
-        # Deliberately NOT claiming B/B1/B2 (compressed protocol) --
-        # see winlink.py's module docstring for why. "$" must be last.
+    def test_build_sid_claims_b2_f_and_bid(self):
+        # Claims B2 (Winlink's own compressed/encapsulated-message
+        # extension) and F (plain ascii, kept for a non-Winlink FBB
+        # station) -- see winlink.py's module docstring's "B2 SUPPORT"
+        # note for why this changed from an ascii-only "F$" claim.
+        # "$" must be last.
         sid = w.build_sid("kamxl", "0.1")
 
-        self.assertEqual(sid, "[kamxl-0.1-F$]")
+        self.assertEqual(sid, "[kamxl-0.1-B2F$]")
 
 
 class BuildHandshakeResponseTests(unittest.TestCase):
     def test_without_challenge_no_pr_line(self):
         response = w.build_handshake_response("AI6K-10")
 
-        self.assertEqual(response, ";FW: AI6K-10\r[kamxl-0.1-F$]")
+        self.assertEqual(response, ";FW: AI6K-10\r[kamxl-0.1-B2F$]")
 
     def test_with_challenge_includes_pr_line(self):
         response = w.build_handshake_response(
@@ -102,7 +164,7 @@ class BuildHandshakeResponseTests(unittest.TestCase):
 
         self.assertEqual(
             response,
-            ";FW: AI6K-10\r[kamxl-0.1-F$]\r;PR: 72768415"
+            ";FW: AI6K-10\r[kamxl-0.1-B2F$]\r;PR: 72768415"
         )
 
     def test_challenge_without_password_raises(self):
@@ -209,6 +271,199 @@ class ProposalTests(unittest.TestCase):
         self.assertEqual(reason, "")
 
 
+class B2ProposalTests(unittest.TestCase):
+    def test_parses_encapsulated_message_proposal(self):
+        proposal = w.parse_b2_proposal("FC EM TJKYEIMMHSRB 527 123 0")
+
+        self.assertEqual(proposal.msg_type, "EM")
+        self.assertEqual(proposal.mid, "TJKYEIMMHSRB")
+        self.assertEqual(proposal.size, 527)
+        self.assertEqual(proposal.compressed_size, 123)
+
+    def test_parses_control_message_proposal(self):
+        proposal = w.parse_b2_proposal("FC CM SOMEID 10 5 0")
+
+        self.assertEqual(proposal.msg_type, "CM")
+
+    def test_tolerates_missing_trailing_field(self):
+        # The B2F spec itself only documents 4 fields (Type/ID/U-Size/
+        # C-Size); the trailing "0" is an extra observed in real
+        # examples (wl2k-go's own docstring) but not guaranteed.
+        proposal = w.parse_b2_proposal("FC EM TJKYEIMMHSRB 527 123")
+
+        self.assertIsNotNone(proposal)
+        self.assertEqual(proposal.compressed_size, 123)
+
+    def test_non_b2_proposal_line_returns_none(self):
+        self.assertIsNone(w.parse_b2_proposal("FB P a b c d 5"))
+        self.assertIsNone(w.parse_b2_proposal("F>"))
+
+    def test_parse_any_proposals_recognizes_both_kinds(self):
+        text = (
+            "FB P F6FBB FC1GHV FC1MVP 24657_F6FBB 1345\r\n"
+            "FC EM TJKYEIMMHSRB 527 123 0\r\n"
+            "F>\r\n"
+        )
+
+        proposals = w.parse_any_proposals(text)
+
+        self.assertEqual(len(proposals), 2)
+        self.assertIsInstance(proposals[0], w.Proposal)
+        self.assertIsInstance(proposals[1], w.B2Proposal)
+
+    def test_parse_any_proposals_only_b2(self):
+        text = "FC EM AAA 10 5 0\r\nFC EM BBB 20 8 0\r\nF>\r\n"
+
+        proposals = w.parse_any_proposals(text)
+
+        self.assertEqual(len(proposals), 2)
+        self.assertTrue(all(isinstance(p, w.B2Proposal) for p in proposals))
+
+
+class B2BlockFramingTests(unittest.TestCase):
+    def test_parses_single_complete_block(self):
+        compressed = lzhuf.compress_b2(b"Hello, Winlink!")
+        raw_bytes = _build_b2_block("Test Subject", compressed)
+
+        blocks = w.parse_b2_blocks(raw_bytes, 1)
+
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0].title, "Test Subject")
+        self.assertEqual(blocks[0].offset, 0)
+        self.assertEqual(blocks[0].compressed_data, compressed)
+
+    def test_parses_multiple_blocks(self):
+        c1 = lzhuf.compress_b2(b"Message one")
+        c2 = lzhuf.compress_b2(b"Message two")
+        raw_bytes = _build_b2_block("First", c1) + _build_b2_block("Second", c2)
+
+        blocks = w.parse_b2_blocks(raw_bytes, 2)
+
+        self.assertEqual(len(blocks), 2)
+        self.assertEqual(blocks[0].title, "First")
+        self.assertEqual(blocks[1].title, "Second")
+
+    def test_returns_fewer_than_count_if_not_all_arrived_yet(self):
+        compressed = lzhuf.compress_b2(b"Only one message so far")
+        raw_bytes = _build_b2_block("Only One", compressed)
+
+        blocks = w.parse_b2_blocks(raw_bytes, 2)
+
+        self.assertEqual(len(blocks), 1)
+
+    def test_returns_nothing_for_incomplete_header(self):
+        blocks = w.parse_b2_blocks(bytes([0x01, 0x05, ord("a")]), 1)
+
+        self.assertEqual(blocks, [])
+
+    def test_returns_nothing_for_incomplete_data_chunk(self):
+        compressed = lzhuf.compress_b2(b"Hello, Winlink!")
+        raw_bytes = _build_b2_block("Test Subject", compressed)
+        # Truncate mid-chunk, before the EOT+checksum ever arrives.
+        truncated = raw_bytes[:-5]
+
+        blocks = w.parse_b2_blocks(truncated, 1)
+
+        self.assertEqual(blocks, [])
+
+    def test_checksum_mismatch_raises_protocol_error(self):
+        compressed = lzhuf.compress_b2(b"Hello, Winlink!")
+        raw_bytes = bytearray(_build_b2_block("Test Subject", compressed))
+        raw_bytes[-1] ^= 0xFF  # Corrupt just the checksum byte itself.
+
+        with self.assertRaises(w.WinlinkProtocolError):
+            w.parse_b2_blocks(bytes(raw_bytes), 1)
+
+    def test_unexpected_byte_raises_protocol_error(self):
+        compressed = lzhuf.compress_b2(b"Hi")
+        raw_bytes = bytearray(_build_b2_block("Test", compressed))
+        # Replace the STX marker right after the header with garbage.
+        header_len = raw_bytes[1]
+        stx_index = 2 + header_len
+        self.assertEqual(raw_bytes[stx_index], 0x02)
+        raw_bytes[stx_index] = 0x99
+
+        with self.assertRaises(w.WinlinkProtocolError):
+            w.parse_b2_blocks(bytes(raw_bytes), 1)
+
+
+class EncapsulatedMessageTests(unittest.TestCase):
+    def test_parses_full_header_and_body(self):
+        raw = _build_encapsulated_message(
+            to=("AI6K", "N0CALL"),
+            cc=("W1AW",),
+            attachments=[("test.txt", b"HELLO")],
+        )
+
+        message = w.parse_encapsulated_message(raw)
+
+        self.assertEqual(message.mid, "12345_N0CALL")
+        self.assertEqual(message.date, "2026/08/03 12:00")
+        self.assertEqual(message.msg_type, "Private")
+        self.assertEqual(message.from_, "N0CALL")
+        self.assertEqual(message.to, ["AI6K", "N0CALL"])
+        self.assertEqual(message.cc, ["W1AW"])
+        self.assertEqual(message.subject, "Test B2 message")
+        self.assertEqual(message.mbo, "KD5EOC")
+        self.assertEqual(message.body, "Hello from B2!\r\n")
+        self.assertEqual(len(message.attachments), 1)
+        self.assertEqual(message.attachments[0].name, "test.txt")
+        self.assertEqual(message.attachments[0].size, 5)
+
+    def test_does_not_extract_attachment_bytes(self):
+        # Deliberate scope choice -- see winlink.py's "ATTACHMENT
+        # SCOPE" note. Attachment carries only name/size.
+        raw = _build_encapsulated_message(attachments=[("f.bin", b"\x00\x01\x02")])
+
+        message = w.parse_encapsulated_message(raw)
+
+        self.assertEqual(message.attachments[0].size, 3)
+        self.assertFalse(hasattr(message.attachments[0], "data"))
+
+    def test_minimal_header_no_attachments(self):
+        raw = _build_encapsulated_message()
+
+        message = w.parse_encapsulated_message(raw)
+
+        self.assertEqual(message.attachments, [])
+        self.assertEqual(message.body, "Hello from B2!\r\n")
+
+    def test_unrecognized_header_fields_preserved_not_dropped(self):
+        raw = (
+            b"Mid: 1_A\r\nDate: 2026/08/03 12:00\r\nType: Private\r\n"
+            b"From: A\r\nTo: B\r\nSubject: S\r\nMbo: M\r\nBody: 5\r\n"
+            b"X-Custom: something\r\n\r\nhello"
+        )
+
+        message = w.parse_encapsulated_message(raw)
+
+        self.assertIn("X-Custom", message.extra_headers)
+        self.assertEqual(message.extra_headers["X-Custom"], ["something"])
+
+    def test_winlink_message_from_encapsulated(self):
+        raw = _build_encapsulated_message()
+        encapsulated = w.parse_encapsulated_message(raw)
+        proposal = w.parse_b2_proposal("FC EM 12345_N0CALL 100 50 0")
+
+        message = w.winlink_message_from_encapsulated(proposal, encapsulated)
+
+        self.assertEqual(message.title, "Test B2 message")
+        self.assertEqual(message.subject, "Test B2 message")
+        self.assertEqual(message.from_, "N0CALL")
+        self.assertEqual(message.to, ["AI6K"])
+        self.assertEqual(message.body, "Hello from B2!\r\n")
+        self.assertIs(message.proposal, proposal)
+
+    def test_falls_back_to_mid_when_subject_missing(self):
+        raw = _build_encapsulated_message(subject="")
+        encapsulated = w.parse_encapsulated_message(raw)
+        proposal = w.parse_b2_proposal("FC EM 12345_N0CALL 100 50 0")
+
+        message = w.winlink_message_from_encapsulated(proposal, encapsulated)
+
+        self.assertEqual(message.title, "12345_N0CALL")
+
+
 class MessageBlockTests(unittest.TestCase):
     def test_splits_multiple_ctrl_z_terminated_blocks(self):
         text = "Title one\r\nBody one\r\n\x1aTitle two\r\nBody two\x1a"
@@ -263,10 +518,16 @@ class KAMXLWinlinkIntegrationTests(unittest.TestCase):
     semantics.
     """
 
-    def _kam_with_stubs(self, read_connected_chunks, mycall_lookup="AI6K-10/AI6K-10"):
+    def _kam_with_stubs(
+        self,
+        read_connected_chunks,
+        mycall_lookup="AI6K-10/AI6K-10",
+        read_connected_bytes_chunks=(),
+    ):
         kam = make_kam(CannedSerial([]))
         calls = []
         remaining = list(read_connected_chunks)
+        remaining_bytes = list(read_connected_bytes_chunks)
 
         kam.get = lambda command: calls.append(("get", command)) or mycall_lookup
         kam.connect_station = lambda callsign, **kwargs: calls.append(
@@ -278,6 +539,14 @@ class KAMXLWinlinkIntegrationTests(unittest.TestCase):
         kam.read_connected = lambda **kwargs: (
             calls.append(("read_connected",))
             or (remaining.pop(0) if remaining else "")
+        )
+        # Only exercised by B2 ("FC") message bodies -- see
+        # read_connected_bytes()'s docstring in kamxl.py for why the
+        # binary message-body phase can't reuse the str-based
+        # read_connected() stub above.
+        kam.read_connected_bytes = lambda **kwargs: (
+            calls.append(("read_connected_bytes",))
+            or (remaining_bytes.pop(0) if remaining_bytes else b"")
         )
         kam.disconnect_station = lambda **kwargs: calls.append(
             ("disconnect_station",)
@@ -473,6 +742,65 @@ class KAMXLWinlinkIntegrationTests(unittest.TestCase):
         )
         fs_call = calls[5]
         self.assertEqual(fs_call, ("send_connected", "FS +"))
+
+    def test_b2_mail_downloaded_and_parsed(self):
+        raw_message = _build_encapsulated_message(
+            subject="Test B2 message",
+            body="Hello from B2!\r\n",
+        )
+        compressed = lzhuf.compress_b2(raw_message)
+        b2_block = _build_b2_block("Test B2 message", compressed)
+
+        proposal_line = (
+            f"FC EM 12345_N0CALL {len(raw_message)} {len(compressed)} 0"
+        )
+
+        kam, calls = self._kam_with_stubs(
+            read_connected_chunks=[
+                "[WL2K-5.0-B2FWIHJM$]\r\n;PQ: 425\r\n>\r\n",
+                f"{proposal_line}\r\nF>\r\n",
+            ],
+            read_connected_bytes_chunks=[b2_block],
+        )
+
+        messages = kam.check_winlink_mail("AI6K-10", "FOOBAR")
+
+        self.assertEqual(len(messages), 1)
+        message = messages[0]
+        self.assertEqual(message.title, "Test B2 message")
+        self.assertEqual(message.subject, "Test B2 message")
+        self.assertEqual(message.from_, "N0CALL")
+        self.assertEqual(message.to, ["AI6K"])
+        self.assertEqual(message.body, "Hello from B2!\r\n")
+        self.assertIsInstance(message.proposal, w.B2Proposal)
+
+        # get, connect, read (handshake), send (login+FF), read
+        # (proposals), send (FS), read_connected_bytes (b2 messages),
+        # disconnect.
+        self.assertEqual(
+            [call[0] for call in calls],
+            [
+                "get", "connect_station", "read_connected",
+                "send_connected", "read_connected", "send_connected",
+                "read_connected_bytes", "disconnect_station",
+            ]
+        )
+
+    def test_mixed_legacy_and_b2_proposals_raises(self):
+        kam, calls = self._kam_with_stubs([
+            "[WL2K-5.0-B2FWIHJM$]\r\n>\r\n",
+            (
+                "FB P N0CALL AI6K-10 AI6K-10 12345_N0CALL 42\r\n"
+                "FC EM 99999_N0CALL 100 50 0\r\n"
+                "F>\r\n"
+            ),
+        ])
+
+        with self.assertRaises(w.WinlinkProtocolError):
+            kam.check_winlink_mail("AI6K-10", "FOOBAR")
+
+        # Must still disconnect cleanly even though it raised.
+        self.assertIn(("disconnect_station",), calls)
 
     def test_explicit_mycall_skips_mycall_lookup(self):
         kam, calls = self._kam_with_stubs([

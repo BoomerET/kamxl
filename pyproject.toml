@@ -36,11 +36,29 @@ Issues = "https://github.com/BoomerET/kamxl/issues"
 kamxl-daemon = "kamxl_daemon:main"
 kamxl-rest = "kamxl_rest:main"
 
-# Flat layout: kamxl.py, packet.py, pbbs.py, kamxl_daemon.py, and
-# kamxl_rest.py live at the repo root, alongside the live-hardware test
-# scripts (*Test.py) and the offline tests/ suite. Only the five importable
-# modules are packaged -- everything else is left out of the distribution
-# deliberately, since the *Test.py scripts need a real KAM-XL on a serial
-# port and aren't meant to ship.
+# Flat layout: all importable modules live at the repo root, alongside
+# the live-hardware test scripts (*Test.py) and the offline tests/
+# suite. Only the importable modules are packaged -- everything else is
+# left out of the distribution deliberately, since the *Test.py scripts
+# need a real KAM-XL on a serial port and aren't meant to ship.
+#
+# NOTE: aprs.py, stations.py, and winlink.py (milestones 7-8) were
+# missing from this list until milestone 8's B2 extension -- a real,
+# pre-existing packaging gap found while adding lzhuf.py here. Running
+# from the repo root never surfaced it (Python resolves imports via cwd
+# there), but a real `pip install` from this pyproject.toml would have
+# shipped a package missing those modules, breaking `import winlink`
+# (and therefore `import kamxl`, which imports it) for anyone actually
+# installing the released package rather than running from a clone.
 [tool.setuptools]
-py-modules = ["kamxl", "packet", "pbbs", "kamxl_daemon", "kamxl_rest"]
+py-modules = [
+    "kamxl",
+    "packet",
+    "pbbs",
+    "aprs",
+    "stations",
+    "winlink",
+    "lzhuf",
+    "kamxl_daemon",
+    "kamxl_rest",
+]

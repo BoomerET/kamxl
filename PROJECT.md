@@ -573,6 +573,125 @@ foundation -- Milestone 1 here. Direction as of now:
    protocol tier -- a real scope expansion, not something to start
    without Dave's go-ahead.
 
+   **Update: B2 protocol tier implemented.** Dave doesn't have access
+   to another Winlink gateway to test against, so rather than staying
+   blocked on KD5EOC-10 requiring B2, he asked for real B2 support.
+
+   Researched properly before writing code, same standard as the rest
+   of this module: the B2F spec's own "Message Structure" and "FBB B2
+   Forwarding Protocol Expansion" sections (winlink.org/B2F), the
+   underlying FBB binary framing (f6fbb.org's "Binary Compressed
+   Forward Version 1" section), and -- for the compression algorithm
+   itself, the one piece here that's genuinely intricate bit-level
+   code -- two independently-authored reference implementations
+   compared line-by-line before writing a single line of the port: the
+   official Winlink Development Team's own VB.NET source
+   (github.com/ARSFI/Winlink-Compression) and wl2k-go's Go
+   implementation (already trusted elsewhere in this project for the
+   secure-login algorithm). Both agree exactly on every constant and
+   table despite being written independently in different languages by
+   different teams -- the same "verify against a trusted reference"
+   standard this project holds for the secure-login code, extended to
+   the compression codec.
+
+   New module `lzhuf.py`: a from-scratch LZHUF compress/decompress
+   port, plus the B2 wire wrapper (2-byte CRC-16 + 4-byte length
+   header). One real wrinkle surfaced while cross-checking the two
+   references: they compute the B2 CRC-16 in what looks like two
+   different ways (VB accumulates over just the real bytes and then
+   byte-swaps the result; wl2k-go pushes two extra zero bytes through
+   the update function and doesn't swap). Empirically verified (not
+   just assumed) that both produce the identical two wire bytes once
+   each is written in its own implementation's natural byte order (this
+   project's little-endian vs. VB's big-endian) -- see
+   `tests/test_lzhuf.py`'s `CRC16CrossCheckTests`. `tests/test_lzhuf.py`
+   otherwise round-trips compress()/decompress() across empty input,
+   single bytes, highly repetitive text (exercises the LZ77
+   back-reference path), all 256 byte values, random incompressible
+   data, and text longer than the 2048-byte sliding window (exercises
+   window wraparound) -- all pass. What this does NOT prove: real
+   byte-for-byte interop with an actual gateway's own LZHUF encoder --
+   no Go or .NET toolchain was available in this sandbox to
+   cross-compile either reference and compare compressed output
+   directly, so that remains open until a real B2 message gets
+   captured and tested against.
+
+   `winlink.py` extended: `build_sid()` now claims `B2F$` instead of
+   `F$` -- a strict superset (a plain-ASCII gateway still just gets
+   `FB` proposals as before, since it doesn't understand the B2 claim
+   anyway). New `B2Proposal` (`FC` proposal lines), `parse_b2_blocks()`
+   (the binary `SOH`/`STX`/`EOT` block framing that carries LZHUF-
+   compressed message bytes -- researched from f6fbb.org and cross-
+   checked against wl2k-go's `fbb/b2f.go`, which independently confirms
+   the identical framing), `EncapsulatedMessage`/
+   `parse_encapsulated_message()` (the real structured Winlink header:
+   Mid/Date/Type/From/To/Cc/Subject/Body, per the B2F spec's "Message
+   Structure" section), and `parse_any_proposals()` (recognizes both
+   legacy `FB` and B2 `FC` proposals in one pass). `WinlinkMessage`
+   gained optional fields (`mid`/`date`/`from_`/`to`/`cc`/`subject`/
+   `attachments`) populated only for a B2 message -- `None`/empty for
+   legacy ascii, preserving the existing shape for anyone already
+   using it. New `WinlinkProtocolError` for genuine B2 framing
+   violations (bad checksum, unexpected byte, or -- deliberately
+   unsupported -- a block mixing both proposal kinds; see below).
+
+   **Attachment scope, asked and answered:** Dave chose "metadata
+   only" over "full attachment extraction" when asked -- attachments
+   are parsed for name and size (`Attachment`) but their file contents
+   are never extracted, avoiding a file-storage design question that
+   wasn't asked for. Still a real upgrade over the ascii tier: subject,
+   from, to, cc, and attachment names/sizes are all now available where
+   before there was only a plain title and body.
+
+   **Mixed-batch scope limit, deliberately not handled:** if a single
+   proposal block ever contains both legacy ascii and B2 proposals,
+   `check_winlink_mail()` raises `WinlinkProtocolError` rather than
+   attempting to interleave two different wire formats. Not expected
+   in practice -- a real Winlink gateway that's negotiated B2 with us
+   is expected to use `FC` exclusively for its own mail, and even
+   wl2k-go itself doesn't bother implementing the legacy ascii/B1
+   proposal codes (a literal "// TODO: implement" in its own
+   `proposal.go`), so a mature, widely-used real Winlink client already
+   made the same call.
+
+   `kamxl.py` extended with `read_connected_bytes()` /
+   `_poll_until_bytes()` -- a real gap found while designing this, not
+   from a hardware test: the existing `read_connected()` decodes
+   through ASCII with `errors="replace"`, which would silently replace
+   every compressed byte >= 0x80 (roughly half of all possible values)
+   with U+FFFD, irreversibly corrupting LZHUF-compressed data. Every
+   text-only stage of the exchange (handshake, proposal lines,
+   including a `FC ...` line itself) still uses the existing
+   `read_connected()` unchanged -- only the actual binary message-body
+   phase after an "FS" accept switches to the new bytes-based path.
+   `check_winlink_mail()` now branches: parses whichever proposal kind
+   the gateway sent, and for B2 proposals, polls raw bytes, parses the
+   binary blocks, decompresses each with `lzhuf.decompress_b2()`, and
+   parses the encapsulated header -- for legacy ascii proposals,
+   nothing changed.
+
+   Web UI (`kamxl_rest.py`)'s winlink page updated to show the richer
+   header (from/to/cc/attachments) when a message has one, falling
+   back to the old proposal-based display for a legacy ascii message --
+   a pre-existing bug would have shown "FROM undefined" for a B2
+   message otherwise, since `B2Proposal` has no `sender` field the way
+   `Proposal` does.
+
+   Also fixed while here: `pyproject.toml`'s `py-modules` list was
+   missing `aprs`, `stations`, and `winlink` entirely -- a real,
+   pre-existing packaging gap from milestones 7 and 8 that running
+   tests from the repo root never surfaced (Python resolves imports via
+   cwd there), but a real `pip install` of a released package would
+   have shipped something that couldn't even `import winlink` (and
+   therefore couldn't `import kamxl`, which imports it). Added those
+   three plus the new `lzhuf`.
+
+   238/238 tests passing. Still unverified: real end-to-end interop
+   with an actual B2-compressed message from a populated mailbox --
+   that needs a real test against a gateway with mail actually waiting,
+   which hasn't happened yet. Expect the same kind of correction this
+   project's other first-drafts needed once tested for real.
+
 ---
 
 
