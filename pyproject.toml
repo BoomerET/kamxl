@@ -28,9 +28,9 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/BoomerET/kamxl"
-Repository = "https://github.com/BoomerET/kamxl"
-Issues = "https://github.com/BoomerET/kamxl/issues"
+Homepage = "https://github.com/BoomerET/kamxl_winlink"
+Repository = "https://github.com/BoomerET/kamxl_winlink"
+Issues = "https://github.com/BoomerET/kamxl_winlink/issues"
 
 [project.scripts]
 kamxl-daemon = "kamxl_daemon:main"

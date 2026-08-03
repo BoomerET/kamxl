@@ -26,8 +26,8 @@ Not yet published to PyPI (see [PROJECT.md](PROJECT.md)). For now, install
 from a local clone:
 
 ```
-git clone git@github.com:BoomerET/kamxl.git
-cd kamxl
+git clone git@github.com:BoomerET/kamxl_winlink.git
+cd kamxl_winlink
 pip install -e .
 ```
 

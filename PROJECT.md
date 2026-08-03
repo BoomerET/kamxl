@@ -741,6 +741,35 @@ foundation -- Milestone 1 here. Direction as of now:
    change). No commit-side change to protocol behavior -- this update
    is entirely about not misreporting *why* a real disconnect happened.
 
+   ### Update: renamed project to kamxl_winlink, pursuing registration
+
+   Following the finding above, Dave renamed the GitHub repo to
+   `kamxl_winlink` and is looking into registering that name with the
+   Winlink Development Team as a recognized client type. To match,
+   `winlink.build_handshake_response()`'s default `app_name` changed
+   from `"kamxl"` to `"kamxl_winlink"` -- this is the actual identity
+   string sent to gateways in the `;FW:`/SID line, so it's the one
+   thing that mattered for a real chance at passing the production
+   CMS's client-type check. `pyproject.toml`'s project URLs, the
+   `README.md` clone instructions, and this repo's own `git remote`
+   were updated to the new GitHub URL.
+
+   Deliberately NOT done: renaming the Python package/module itself
+   (still `kamxl.py`, `import kamxl`, PyPI name `kamxl`, `kamxl-daemon`/
+   `kamxl-rest` console scripts) -- Dave confirmed this rename is
+   scoped to the Winlink client identity and repo location only, not
+   the whole codebase.
+
+   Whether the production CMS will actually accept `"kamxl_winlink"`
+   is still unverified -- that depends on Dave's registration going
+   through, which hasn't been confirmed as of this writing. If the
+   same "Unknown client types are not allowed" disconnect recurs with
+   the new name, that means registration hasn't completed yet (or
+   needs a different process than assumed).
+
+   238/238 tests passing (two `BuildHandshakeResponseTests` cases
+   updated for the new default identity string).
+
 ---
 
 

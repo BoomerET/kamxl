@@ -153,9 +153,14 @@ class SIDTests(unittest.TestCase):
 
 class BuildHandshakeResponseTests(unittest.TestCase):
     def test_without_challenge_no_pr_line(self):
+        # app_name defaults to "kamxl_winlink", not "kamxl" -- see
+        # winlink.py's "KNOWN DISCONNECT REASONS" note: the production
+        # Winlink CMS rejected "kamxl" as an unrecognized client type,
+        # and "kamxl_winlink" is the name now being pursued for
+        # registration.
         response = w.build_handshake_response("AI6K-10")
 
-        self.assertEqual(response, ";FW: AI6K-10\r[kamxl-0.1-B2F$]")
+        self.assertEqual(response, ";FW: AI6K-10\r[kamxl_winlink-0.1-B2F$]")
 
     def test_with_challenge_includes_pr_line(self):
         response = w.build_handshake_response(
@@ -164,7 +169,7 @@ class BuildHandshakeResponseTests(unittest.TestCase):
 
         self.assertEqual(
             response,
-            ";FW: AI6K-10\r[kamxl-0.1-B2F$]\r;PR: 72768415"
+            ";FW: AI6K-10\r[kamxl_winlink-0.1-B2F$]\r;PR: 72768415"
         )
 
     def test_challenge_without_password_raises(self):

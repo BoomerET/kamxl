@@ -138,21 +138,29 @@ since guessing which one applies has already gone stale once):
      cause: the production Winlink CMS (which KD5EOC-10 proxies
      sessions to -- note the earlier handshake banner's own "CMS via
      KD5EOC" line) appears to validate the connecting client's
-     identity (most likely this module's own app name, "kamxl", in
-     its SID/;FW: line) against a list of recognized client software,
-     and rejects anything it doesn't recognize on its PRODUCTION
-     system -- pointing instead at "cms-z.winlink.org", which appears
-     to be a separate test/development CMS instance for exactly this
-     situation (new, not-yet-recognized client software). This is NOT
-     a protocol bug in this module -- the handshake and secure login
-     both completed correctly first -- and it's NOT something this
-     module can code its way around: it's a real gatekeeping/policy
-     decision on Winlink's infrastructure, not a wire-format detail.
-     Resolving it (if it needs resolving) is a question for the
-     Winlink Development Team or for however "cms-z" testing is
-     actually meant to be reached, not a code change here -- this
-     module deliberately does NOT attempt to spoof a different,
-     already-recognized client's identity to work around this.
+     identity (the app name in its SID/;FW: line -- at the time, this
+     module's own app name was "kamxl") against a list of recognized
+     client software, and rejects anything it doesn't recognize on its
+     PRODUCTION system -- pointing instead at "cms-z.winlink.org",
+     which appears to be a separate test/development CMS instance for
+     exactly this situation (new, not-yet-recognized client software).
+     This is NOT a protocol bug in this module -- the handshake and
+     secure login both completed correctly first -- and it's NOT
+     something this module can code its way around: it's a real
+     gatekeeping/policy decision on Winlink's infrastructure, not a
+     wire-format detail. This module deliberately does NOT attempt to
+     spoof a different, already-recognized client's identity to work
+     around this.
+
+     In response, the project was renamed to "kamxl_winlink" (repo and
+     app identity both) and Dave is looking into registering that name
+     with the Winlink Development Team. build_handshake_response()'s
+     default app_name is now "kamxl_winlink" to match -- but as of this
+     writing that registration hasn't been confirmed, so whether the
+     production CMS will actually recognize "kamxl_winlink" remains
+     unverified. If this same disconnect recurs with the new name,
+     that means registration either hasn't gone through yet or needs a
+     different name/process than assumed here.
 """
 
 import hashlib
@@ -311,7 +319,7 @@ def build_sid(app_name: str, app_version: str) -> str:
 
 def build_handshake_response(
     mycall: str,
-    app_name: str = "kamxl",
+    app_name: str = "kamxl_winlink",
     app_version: str = "0.1",
     secure_challenge: Optional[str] = None,
     password: Optional[str] = None,
@@ -325,6 +333,14 @@ def build_handshake_response(
     ``password`` is required if ``secure_challenge`` is given (raises
     ValueError otherwise, rather than silently skipping login and
     likely getting disconnected by the gateway).
+
+    ``app_name`` defaults to "kamxl_winlink", not "kamxl" -- see the
+    "KNOWN DISCONNECT REASONS" note above: the production Winlink CMS
+    rejected "kamxl" as an unrecognized client type, and this new name
+    is the one being pursued for registration with the Winlink
+    Development Team. Until/unless that registration completes, this
+    default is a real, unverified guess -- the same kind of thing this
+    project always flags rather than silently assumes works.
     """
     if secure_challenge and not password:
         raise ValueError(
