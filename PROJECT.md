@@ -453,6 +453,56 @@ foundation -- Milestone 1 here. Direction as of now:
    (still pending) `aprs.py`'s parsing all needed it. 198/198 tests
    passing at time of writing.
 
+   **Update: first real-hardware test, and a real bug found.** Dave
+   connected to a real gateway (KD5EOC-10, Denton County Texas EOC)
+   with his real Winlink account and password. The SID exchange and
+   the `;PQ:`/`;PR:` secure-login challenge-response worked exactly as
+   expected -- confirmed live, not just against `wl2k-go`'s test
+   vectors. The web app then reported "No mail waiting," which Dave
+   confirmed was factually correct (no mail was waiting for his
+   account that day).
+
+   But the daemon's verbose log showed something that didn't add up:
+   the "winlink proposals raw" text it logged (`;FW: AI6K\r\n
+   [kamxl-0.1-F$]\r\n;PR: 14482272\r\nFF\r\n`) was byte-for-byte
+   identical to what our own code had just sent as its handshake
+   response. The KAM-XL was echoing our own connected-mode
+   transmission back to us -- a behavior already known from PBBS's `L`
+   command echo, just not yet seen on the Winlink path. And
+   `has_end_of_block_marker()` treated a bare `FF` line as "the
+   gateway has nothing to propose." Since `check_winlink_mail()`
+   always sends its own `FF` right after logging in (receive-only
+   design, never proposes anything outbound), the echo of our OWN
+   `FF` satisfied that check immediately -- before the real gateway
+   had said anything at all.
+
+   To be precise about what this means: the "no mail" answer that day
+   was correct, but not because the code actually detected the
+   gateway's real `FQ` (no-mail) response -- the bug meant it never
+   got that far. It stopped on the echo and returned empty before the
+   gateway's genuine reply, whatever it would have been, ever arrived.
+   Had there been real mail waiting, this would have silently reported
+   "no mail" instead of downloading it -- a real false-negative, not a
+   cosmetic issue.
+
+   Fixed by removing the `FF` branch from `has_end_of_block_marker()`,
+   leaving only the gateway-only `F>` marker (proposal batch ready) and
+   `FQ` (genuinely nothing to send) as valid stop conditions -- per the
+   B2F spec, the gateway's real reply to our initial `FF` is always one
+   of those two, never another bare `FF` at that point in the exchange.
+   This mirrors the same defensive principle already used for PBBS's
+   `ENTER COMMAND` marker: only match strings the remote end sends,
+   never something we send ourselves. Added a dedicated regression
+   test (`test_own_echoed_transmission_not_mistaken_for_gateways_reply`)
+   that replays Dave's exact captured handshake/echo text followed by a
+   real proposal batch and message body, proving `check_winlink_mail()`
+   now waits past the echo and correctly retrieves the real message.
+   200/200 tests passing.
+
+   Proposal parsing and message-body extraction against an actual
+   populated mailbox remain unverified -- that needs an account with
+   real mail waiting, which hasn't happened yet.
+
 ---
 
 

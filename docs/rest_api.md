@@ -344,16 +344,21 @@ time -- the endpoint's socket timeout budget scales with
 (handshake, proposals, message bodies), plus `connect_timeout` and a
 margin for `disconnect_station()`.
 
-**Receive-only, plain-ASCII FBB tier only, unverified against a real
-gateway.** See `winlink.py`'s module docstring and
+**Receive-only, plain-ASCII FBB tier only, partially verified against
+a real gateway.** See `winlink.py`'s module docstring and
 [api_reference.md](api_reference.md#winlink-milestone-8) for the full
 scope writeup -- in short: no compression, no outbound send yet, and
 messages come back with a plain title/body rather than Winlink's
 richer structured header (a real consequence of the ASCII-only
-choice, not a bug). The one piece that's actually confirmed correct
-independent of real-hardware testing is the secure-login response
-algorithm, verified against a trusted open-source reference
-implementation's own test vectors.
+choice, not a bug). The secure-login response algorithm is confirmed
+correct independent of real-hardware testing, verified against a
+trusted open-source reference implementation's own test vectors. A
+live test against a real gateway (KD5EOC-10) also confirmed the SID
+exchange and secure-login challenge-response work end-to-end, and
+surfaced a real KAM-XL echo-back bug (since fixed) in how "the
+gateway has nothing to propose" was detected -- see
+api_reference.md's writeup for details. Proposal parsing against an
+actual populated mailbox is still unverified.
 
 ## Testing
 

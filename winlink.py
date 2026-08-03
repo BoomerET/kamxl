@@ -50,11 +50,21 @@ five pending messages, only the first five come back on one call;
 calling again should fetch the next batch, but this hasn't been
 tested against real traffic where that would actually happen.
 
-UNVERIFIED AGAINST A REAL RMS GATEWAY. Built from the spec and a
-trusted reference implementation, not a captured live session -- per
-this project's usual practice, treat this as a first draft, expect it
-to need the same kind of real-hardware correction packet.py's
-HEADER_RE and pbbs.py's parsing both needed.
+PARTIALLY VERIFIED AGAINST A REAL RMS GATEWAY. The handshake and
+secure login were confirmed working end-to-end against a real
+gateway (KD5EOC-10): SID exchange, the ";PQ:"/";PR:" challenge-
+response, and correctly detecting "no mail waiting" (via a bare
+"FQ") were all observed live and matched what this module expected.
+That same test also surfaced a real bug (since fixed -- see
+has_end_of_block_marker()'s docstring): the KAM-XL echoes our own
+connected-mode transmission back to us, which our own "FF" (always
+sent, since this module never proposes anything of its own) could be
+mistaken for the gateway's reply if the wrong text was treated as a
+stop marker. Proposal parsing and message-body extraction are still
+unverified against a real populated mailbox -- that needs an account
+with actual mail waiting to test, which hasn't happened yet. Expect
+the same kind of further correction packet.py's HEADER_RE and
+pbbs.py's parsing both needed after their own first real tests.
 """
 
 import hashlib
@@ -327,16 +337,32 @@ def build_fs_line(count: int, accept: bool = True) -> str:
 def has_end_of_block_marker(text: str) -> bool:
     """
     Whether ``text`` contains the "F>" line that ends a proposal
-    block, OR a bare "FF" (the gateway proposing nothing) -- either
-    means the gateway is done sending proposals for now.
+    block -- the gateway is done sending proposals for now.
+
+    Deliberately does NOT also match a bare "FF" line, even though
+    "FF" means "I have nothing to propose" and can legitimately come
+    from either side. Real bug found live against a real gateway
+    (KD5EOC-10): the KAM-XL echoes our own connected-mode transmission
+    back to us -- the same behavior already known for PBBS (see
+    pbbs.py's RealHardwareEmptyMailboxTests, whose captured raw text
+    starts with the echoed "L" command). KAMXL.check_winlink_mail()
+    always sends "FF" itself right after logging in (this module's
+    receive-only MVP never proposes an outbound message) -- so if a
+    bare "FF" were treated as a valid "the gateway has nothing"
+    signal, our OWN echoed "FF" would satisfy it immediately, before
+    the real gateway had answered at all. In the live test that
+    surfaced this, it happened to still produce the correct answer
+    (there really was no mail waiting) purely by coincidence -- had
+    there been real mail, this would have silently reported "no mail"
+    instead. Per the spec, the gateway's genuine reply to our initial
+    "FF" is either a real "FB ... F>" proposal batch, or a bare "FQ"
+    if it truly has nothing (see has_fq_marker()) -- never a bare
+    "FF" at that specific point in the exchange, so relying on "F>"/
+    "FQ" only (things the far end sends and we never do) sidesteps
+    the echo ambiguity entirely, the same defensive principle PBBS's
+    "ENTER COMMAND" marker already relies on.
     """
-    for line in text.splitlines():
-        stripped = line.strip()
-
-        if stripped == "F>" or stripped == "FF":
-            return True
-
-    return False
+    return any(line.strip() == "F>" for line in text.splitlines())
 
 
 def has_fq_marker(text: str) -> bool:

@@ -159,8 +159,19 @@ class ProposalTests(unittest.TestCase):
 
     def test_has_end_of_block_marker(self):
         self.assertTrue(w.has_end_of_block_marker("FB P a b c d 5\r\nF>\r\n"))
-        self.assertTrue(w.has_end_of_block_marker("FF\r\n"))
         self.assertFalse(w.has_end_of_block_marker("FB P a b c d 5\r\n"))
+
+    def test_has_end_of_block_marker_does_not_match_bare_ff(self):
+        # Real bug, found live against a real gateway (KD5EOC-10):
+        # KAMXL.check_winlink_mail() always sends its own "FF" right
+        # after login (receive-only MVP, never proposes an outbound
+        # message) -- and the KAM-XL echoes connected-mode
+        # transmissions back to us (same behavior already known for
+        # PBBS). A bare "FF" is deliberately NOT treated as an
+        # end-of-block marker here, so our own echoed "FF" can never
+        # be mistaken for the gateway's reply -- see
+        # has_end_of_block_marker()'s docstring for the full story.
+        self.assertFalse(w.has_end_of_block_marker("FF\r\n"))
 
     def test_has_fq_marker(self):
         self.assertTrue(w.has_fq_marker("FQ\r\n"))
@@ -283,6 +294,56 @@ class KAMXLWinlinkIntegrationTests(unittest.TestCase):
         sent = calls[3]
         self.assertEqual(sent[0], "send_connected")
         self.assertNotIn(";PR:", sent[1])
+
+    def test_own_echoed_transmission_not_mistaken_for_gateways_reply(self):
+        """
+        Regression test for a real bug found live against a real
+        gateway (KD5EOC-10, Denton County Texas EOC). Verbatim shape
+        of what was actually observed via daemon -v logging:
+
+            08:29:22 conn-6720: connected
+            08:29:33 winlink handshake raw: 'Welcome to the Denton
+                County Texas EOC\\r\\n[WL2K-5.0-B2FWIHJM$]\\r\\n
+                ;PQ: 20914129\\r\\nCMS via KD5EOC >\\r\\n'
+            08:29:34 winlink proposals raw: ';FW: AI6K\\r\\n
+                [kamxl-0.1-F$]\\r\\n;PR: 14482272\\r\\nFF\\r\\n'
+            08:29:37 conn-6720: winlink.check_mail -> ok
+
+            (webapp: "No mail waiting.")
+
+            That "proposals raw" text is EXACTLY what we ourselves
+            sent (;FW:/SID/;PR:/FF) -- the KAM-XL echoes connected-
+            mode transmissions back to us, same as PBBS's already-
+            known echo of its own "L" command. The old
+            has_end_of_block_marker() treated a bare "FF" as "the
+            gateway has nothing", so it stopped and returned "no
+            mail" on seeing our OWN echo -- before the real gateway
+            had said anything at all. It happened to still be the
+            right answer that day (there really was no mail), but
+            would have silently under-reported real waiting mail.
+
+        This test feeds exactly that echoed chunk first, followed by
+        the gateway's real (delayed) reply in a later read_connected()
+        call, and confirms the real reply is what gets used --
+        proving the fix, not just changing behavior.
+        """
+        kam, calls = self._kam_with_stubs([
+            "Welcome to the Denton County Texas EOC\r\n"
+            "[WL2K-5.0-B2FWIHJM$]\r\n;PQ: 20914129\r\nCMS via KD5EOC >\r\n",
+            # Our own echoed transmission -- NOT the gateway's reply.
+            ";FW: AI6K\r\n[kamxl-0.1-F$]\r\n;PR: 14482272\r\nFF\r\n",
+            # The gateway's real, delayed reply.
+            "FB P N0CALL AI6K AI6K 12345_N0CALL 42\r\nF>\r\n",
+            "Test Subject\r\nHello there.\r\n\x1a",
+        ])
+
+        messages = kam.check_winlink_mail(
+            "KD5EOC-10", "REALPASSWORD", mycall="AI6K"
+        )
+
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0].title, "Test Subject")
+        self.assertEqual(messages[0].proposal.sender, "N0CALL")
 
     def test_pending_mail_downloaded_and_parsed(self):
         kam, calls = self._kam_with_stubs([

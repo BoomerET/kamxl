@@ -139,14 +139,32 @@ messages received this way carry only a plain title + body, not
 Winlink's richer structured address header (Mid/Date/From/To/Subject/
 attachments) -- that header is only transmitted to B2-capable clients.
 
-**Unverified against a real RMS gateway.** Built from the spec and
-cross-checked against a trusted open-source reference implementation
-(`wl2k-go`) for the one genuinely security-sensitive piece -- the
-secure-login response algorithm, verified against `wl2k-go`'s own
-published test vectors (`winlink.SECURE_LOGIN_TEST_VECTORS`,
-`tests/test_winlink.py`). Everything else is a first draft, expected
-to need the same kind of real-hardware correction `pbbs.py` and
-`packet.py`'s `HEADER_RE` both needed.
+**Partially verified against a real RMS gateway.** Built from the
+spec and cross-checked against a trusted open-source reference
+implementation (`wl2k-go`) for the one genuinely security-sensitive
+piece -- the secure-login response algorithm, verified against
+`wl2k-go`'s own published test vectors
+(`winlink.SECURE_LOGIN_TEST_VECTORS`, `tests/test_winlink.py`). A
+live test against a real gateway (KD5EOC-10) confirmed the SID
+exchange, the `;PQ:`/`;PR:` secure-login challenge-response, and
+handshake-prompt detection all work end-to-end. That same test also
+found a real bug (since fixed): the KAM-XL echoes our own
+connected-mode transmission back to us -- the same behavior already
+known for PBBS's `L` command -- and `has_end_of_block_marker()` used
+to treat a bare `FF` as "the gateway has nothing to propose," so our
+own echoed `FF` (always sent, since this module never proposes
+anything of its own) could be mistaken for the gateway's reply. It
+happened to still produce the right answer that day (there really
+was no mail), but would have silently missed real waiting mail.
+Fixed by only matching the gateway-only `F>`/`FQ` markers -- see
+`has_end_of_block_marker()`'s docstring and
+`tests/test_winlink.py`'s
+`test_own_echoed_transmission_not_mistaken_for_gateways_reply`.
+Proposal parsing and message-body extraction against an actual
+populated mailbox remain unverified -- that needs an account with
+real mail waiting, which hasn't happened yet. Expect the same kind
+of further correction `pbbs.py` and `packet.py`'s `HEADER_RE` both
+needed after their own first real tests.
 
 | Method | Description |
 | --- | --- |
