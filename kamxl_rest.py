@@ -1310,12 +1310,35 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: Any) -> None:
         # Route stdlib's own per-request access log through our
         # logger instead of straight to stderr, so -v/--verbose and
-        # the rest of the logging setup applies to it too.
+        # the rest of the logging setup applies to it too. Skips
+        # /favicon.ico -- every browser requests it automatically and
+        # unauthenticated on first load of any page here, and logging
+        # that routine, harmless request (as a 401, no less -- see
+        # do_GET() below) just adds noise, not a real access worth a
+        # line in the log.
+        if urlparse(self.path).path == "/favicon.ico":
+            return
+
         logger.info("%s - %s", self.address_string(), fmt % args)
 
     # -- Dispatch -----------------------------------------------------
 
     def do_GET(self) -> None:
+        if urlparse(self.path).path == "/favicon.ico":
+            # Browsers request this unconditionally on first load of
+            # any page here, without the Authorization header or
+            # ?token= -- there's no cookie/session for them to have
+            # picked it up from. Left to the normal dispatch path,
+            # that always fails auth and logs a 401 that looks like a
+            # security problem but is really just a browser being a
+            # browser. Answering 204 here (no favicon to serve, and
+            # none needed) tells the browser "nothing here, don't ask
+            # again" instead -- deliberately bypasses _check_auth()
+            # entirely, since there's nothing sensitive being served.
+            self.send_response(204)
+            self.end_headers()
+            return
+
         self._dispatch("GET")
 
     def do_PUT(self) -> None:

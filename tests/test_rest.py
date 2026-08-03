@@ -167,6 +167,25 @@ class AuthTests(RestTestCase):
 
         self.assertEqual(status, 401)
 
+    def test_favicon_bypasses_auth(self):
+        # Real bug found in practice: browsers request /favicon.ico
+        # automatically and unauthenticated on first load of any page
+        # here. Left to the normal auth-then-dispatch path, that
+        # always failed auth and logged a 401 that looked like a
+        # security problem but was really just routine browser
+        # behavior -- see do_GET()'s own comment in kamxl_rest.py.
+        # No ?token= or Authorization header given here on purpose.
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/favicon.ico")
+        response = conn.getresponse()
+        response.read()
+
+        self.assertEqual(response.status, 204)
+
 
 class EndpointTests(RestTestCase):
     def test_ping(self):

@@ -129,6 +129,14 @@ before assuming something's wrong.
 | 503 | Can't reach the daemon at all -- probably not running |
 | 504 | Reached the daemon, but it hasn't answered yet within the time this layer is willing to wait. Distinct from 502: the operation may still be in progress on the KAM-XL side (most likely on a slow/failed AX.25 connect) rather than having actually failed |
 
+`GET /favicon.ico` is a deliberate exception to all of the above: it
+bypasses auth entirely and always returns `204` with no body, never
+`401`. Browsers request this path automatically and unauthenticated on
+first load of any page here (there's no cookie/session for them to
+have picked a token up from), so leaving it to the normal auth path
+would log a routine, harmless request as an "Unauthorized" failure --
+see `RESTRequestHandler.do_GET()` in `kamxl_rest.py`.
+
 ## Examples
 
 ```
