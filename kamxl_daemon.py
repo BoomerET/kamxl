@@ -48,6 +48,7 @@ from typing import Any, Callable, Dict, List, Optional, Set
 
 from kamxl import KAMXL, KAMError
 from packet import Packet, PacketParser
+from stations import StationTracker
 
 
 DEFAULT_SOCKET_PATH = "/tmp/kamxl.sock"
@@ -85,6 +86,16 @@ class KAMDaemon:
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitor_stop = threading.Event()
 
+        # Milestone 7 (APRS mapping): built passively from whatever
+        # MONITOR traffic the daemon happens to see -- see
+        # stations.py. Reading _stations doesn't need _kam_lock (it
+        # never touches the serial connection), but does need its own
+        # lock, since the monitor thread writes to it from the
+        # background while ordinary request-handling threads read it
+        # via stations.list/stations.get.
+        self._stations = StationTracker()
+        self._stations_lock = threading.Lock()
+
         self._methods: Dict[str, Callable[[Dict[str, Any]], Any]] = {
             "ping": self._m_ping,
             "status": self._m_status,
@@ -102,11 +113,18 @@ class KAMDaemon:
             "pbbs.read_message": self._m_pbbs_read_message,
             "monitor.subscribe": self._m_monitor_subscribe,
             "monitor.unsubscribe": self._m_monitor_unsubscribe,
+            "stations.list": self._m_stations_list,
+            "stations.get": self._m_stations_get,
         }
 
         self._server: Optional["_ThreadingUnixStreamServer"] = None
         self._shutdown_lock = threading.Lock()
         self._shutdown_done = False
+
+        # Always on, from construction -- not gated on a subscriber
+        # the way monitor broadcasting itself started out (see
+        # _monitor_loop()'s docstring below for why this changed).
+        self._ensure_monitor_thread()
 
     # -----------------------------------------------------------------------
     # Method dispatch
@@ -233,12 +251,26 @@ class KAMDaemon:
     def _m_monitor_subscribe(self, params: Dict[str, Any]) -> None:
         # Actual subscriber-set membership is handled by the request
         # handler itself (it needs to add *itself*) -- this just
-        # guarantees the background broadcast thread is running.
+        # guarantees the background broadcast thread is running (a
+        # defensive no-op in the normal case, since __init__ already
+        # started it; only matters if it somehow died).
         self._ensure_monitor_thread()
         return None
 
     def _m_monitor_unsubscribe(self, params: Dict[str, Any]) -> None:
         return None
+
+    def _m_stations_list(self, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+        with self._stations_lock:
+            stations = self._stations.list_stations()
+
+        return [dataclasses.asdict(station) for station in stations]
+
+    def _m_stations_get(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        with self._stations_lock:
+            station = self._stations.get_station(params["callsign"])
+
+        return dataclasses.asdict(station) if station is not None else None
 
     # -----------------------------------------------------------------------
     # Monitor broadcast
@@ -257,15 +289,25 @@ class KAMDaemon:
             self._monitor_thread.start()
 
     def _monitor_loop(self) -> None:
+        """
+        Continuously polls the KAM-XL for MONITOR traffic and feeds
+        every decoded Packet to both the station tracker (milestone 7)
+        and any live monitor.subscribe()'d clients.
+
+        Milestone 5-6 behavior had this thread start on the first
+        monitor.subscribe() and exit once the last subscriber left --
+        fine when the only consumer was a live monitor pane, but
+        milestone 7's station database needs traffic decoded
+        continuously to build up a useful picture over time, not just
+        while somebody happens to have the map page open. So this now
+        runs for the daemon's whole lifetime (started once from
+        __init__(), stopped only by shutdown()) -- subscriber count no
+        longer has any bearing on whether it runs, only on whether
+        _broadcast_packet() actually has anyone to send events to.
+        """
         parser = PacketParser()
 
         while not self._monitor_stop.is_set():
-            with self._subscribers_lock:
-                has_subscribers = bool(self._subscribers)
-
-            if not has_subscribers:
-                break
-
             # Brief lock acquisition per poll (rather than holding it
             # for the whole loop) so ordinary get/set requests can
             # still interleave while monitoring is active. This does
@@ -288,17 +330,23 @@ class KAMDaemon:
                 logger.debug("monitor raw: %r", text)
 
                 for packet in parser.feed(text):
-                    self._broadcast_packet(packet)
+                    self._handle_packet(packet)
 
             time.sleep(0.05)
 
         # PacketParser only knows a packet is complete once the
         # *next* header line arrives -- so whatever was still being
-        # assembled when the last subscriber left (or the daemon is
-        # shutting down) would otherwise be silently lost. Flush it
-        # out now rather than dropping it.
+        # assembled when the daemon started shutting down would
+        # otherwise be silently lost. Flush it out now rather than
+        # dropping it.
         for packet in parser.flush():
-            self._broadcast_packet(packet)
+            self._handle_packet(packet)
+
+    def _handle_packet(self, packet: Packet) -> None:
+        with self._stations_lock:
+            self._stations.update(packet)
+
+        self._broadcast_packet(packet)
 
     def _broadcast_packet(self, packet: Packet) -> None:
         event = {

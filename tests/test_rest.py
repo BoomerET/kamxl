@@ -18,6 +18,7 @@ import unittest
 from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 
 from kamxl_daemon import KAMDaemon
+from packet import Packet
 from pbbs import PBBSMessage, PBBSMessageSummary
 import kamxl_rest
 
@@ -464,6 +465,94 @@ class PBBSEndpointTests(RestTestCase):
         self.addCleanup(conn.close)
 
         conn.request("GET", "/pbbs")
+        response = conn.getresponse()
+        response.read()
+
+        self.assertEqual(response.status, 401)
+
+
+class StationsEndpointTests(RestTestCase):
+    """
+    Milestone 7. Populates daemon._stations directly via
+    StationTracker.update() rather than driving real MONITOR traffic
+    through ChunkSerial (already covered end-to-end in
+    tests/test_daemon.py's StationsTests) -- these are only about the
+    REST layer's own routing and response shape.
+    """
+
+    def _seed_station(self, daemon, callsign="AI6K-9"):
+        packet = Packet(
+            source=callsign,
+            destination="APRS",
+            digipeaters=(),
+            port=1,
+            payload="!4903.50N/07201.75W-Test comment",
+            raw="",
+            frame_type="UI",
+        )
+        daemon._stations.update(packet, now=1000.0)
+
+    def test_stations_list(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+        self._seed_station(daemon)
+
+        status, payload = self.request(port, "GET", "/stations")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["result"]), 1)
+        self.assertEqual(payload["result"][0]["callsign"], "AI6K-9")
+        self.assertEqual(payload["result"][0]["comment"], "Test comment")
+
+    def test_stations_list_empty_by_default(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(port, "GET", "/stations")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"], [])
+
+    def test_stations_get_known_callsign(self):
+        daemon, port = self.start_stack(ScriptedSerial({}))
+        self._seed_station(daemon)
+
+        status, payload = self.request(port, "GET", "/stations/AI6K-9")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["result"]["callsign"], "AI6K-9")
+
+    def test_stations_get_unknown_callsign_returns_none(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(port, "GET", "/stations/NOBODY")
+
+        self.assertEqual(status, 200)
+        self.assertIsNone(payload["result"])
+
+    def test_map_page_served(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/map?token=test-token")
+        response = conn.getresponse()
+        html = response.read().decode("utf-8")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            response.getheader("Content-Type"), "text/html; charset=utf-8"
+        )
+        self.assertIn("kamxl station map", html)
+        self.assertIn("/stations", html)
+        self.assertIn("leaflet", html.lower())
+
+    def test_map_page_requires_auth_when_enabled(self):
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        self.addCleanup(conn.close)
+
+        conn.request("GET", "/map")
         response = conn.getresponse()
         response.read()
 

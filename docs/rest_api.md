@@ -91,6 +91,9 @@ call actually does.
 | GET | `/pbbs/messages` | | List PBBS messages, see [PBBS](#pbbs) |
 | GET | `/pbbs/messages/<N>` | | Read PBBS message `N`; `result` is `null` if not found |
 | GET | `/pbbs` | | Serves the PBBS web page |
+| GET | `/stations` | | List known stations, see [Stations / map](#stations--map) |
+| GET | `/stations/<CALLSIGN>` | | One station; `result` is `null` if never heard |
+| GET | `/map` | | Serves the station map web page |
 
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
@@ -255,6 +258,54 @@ short slices and returns as soon as the PBBS's `ENTER COMMAND:`
 prompt reappears. This replaced an earlier fixed-wait design after a
 real message on hardware had its last line silently truncated because
 it took slightly longer than the old 5s window to fully arrive.
+
+## Stations / map
+
+Milestone 7 (APRS mapping). `GET /map` serves a third self-contained
+page: a live map, built with [Leaflet](https://leafletjs.com/) and
+OpenStreetMap tiles (both loaded from `cdnjs.cloudflare.com` by the
+*browser* viewing the page -- this is the one external network
+dependency anywhere in this project, and it's entirely client-side;
+`kamxl_rest.py` itself never talks to the internet). Linked from the
+web terminal's and PBBS page's headers, and back again.
+
+Unlike PBBS, `GET /stations` and `GET /stations/<CALLSIGN>` never
+drive an AX.25 connect/command/disconnect cycle -- they just read
+whatever `kamxl_daemon.py`'s always-on monitor thread has already
+decoded into its in-memory station database (see
+[daemon.md](daemon.md#concurrency-model) and `stations.py`), so these
+calls are fast and don't need a generous timeout the way PBBS calls
+do.
+
+```
+curl -H "Authorization: Bearer $TOKEN" http://kam-host:8080/stations
+curl -H "Authorization: Bearer $TOKEN" http://kam-host:8080/stations/AI6K-9
+```
+
+`/stations/<CALLSIGN>` returns `{"ok": true, "result": null}` (not a
+404) for a callsign never heard, same "doesn't exist" vs. "no data
+yet" reasoning as `/pbbs/messages/<N>`.
+
+Each `Station` in the response: `callsign`, `latitude`, `longitude`,
+`symbol_table`, `symbol_code`, `comment`, `last_heard` (epoch
+seconds), `packet_count`. The map page renders each as a plain
+Leaflet marker (not a real APRS symbol icon -- rendering the full
+APRS symbol-table/symbol-code icon set was scoped out of the MVP) with
+a popup showing position, comment, and how long ago it was last heard;
+it polls `/stations` every 15 seconds and only actually pans/zooms to
+fit all stations once, the first time any appear, so it doesn't yank
+the view out from under someone who's since panned around manually.
+
+**Unverified against a real captured APRS session.** `aprs.py`'s
+position-report parsing is built from the public APRS Protocol
+Reference spec (not the KAM-XL manual -- APRS is a separate,
+open protocol layered on top of ordinary AX.25 UI frames), and the
+station database is straightforward once a position decodes -- but
+neither has been checked yet against real APRS traffic the way
+`packet.py`'s `HEADER_RE` and `pbbs.py`'s parsing eventually were.
+Treat it as a first draft; see `aprs.py`'s module docstring for two
+specific known simplifications (compressed positions unsupported,
+position ambiguity not fully modeled).
 
 ## Testing
 

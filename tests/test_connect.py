@@ -26,6 +26,13 @@ class ReadUntilAnyLineEndTests(unittest.TestCase):
                 "STN\r\n",
             ])
         )
+        # _read_until_any() is never actually called without a
+        # preceding write in real usage (connect_station()/
+        # disconnect_station() always write their command first) --
+        # CannedSerial models that by gating its queued chunks behind
+        # at least one write() (see fakes.py), so this direct,
+        # in-isolation test needs one too.
+        kam.serial.write(b"C KD5EOC-10\r")
 
         text, marker = kam._read_until_any(
             kam.CONNECT_MARKERS,
@@ -45,6 +52,7 @@ class ReadUntilAnyLineEndTests(unittest.TestCase):
                 "STN\r\n",
             ])
         )
+        kam.serial.write(b"C KD5EOC-10\r")
 
         text, marker = kam._read_until_any(
             kam.CONNECT_MARKERS,
@@ -67,6 +75,7 @@ class ReadUntilAnyLineEndTests(unittest.TestCase):
                 "*** CONNECTED to KD5EOC-10 VIA RS",
             ])
         )
+        kam.serial.write(b"C KD5EOC-10\r")
 
         text, marker = kam._read_until_any(
             kam.CONNECT_MARKERS,

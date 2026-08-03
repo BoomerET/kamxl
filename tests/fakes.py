@@ -147,6 +147,19 @@ class CannedSerial:
     including reproducing the exact chunk splits observed on real
     hardware (e.g. a VIA digipeat banner arriving as two separate
     reads).
+
+    Chunks are only ever released after at least one write() has
+    happened (see read()/in_waiting below) -- added for milestone 7,
+    when the daemon's monitor-polling background thread became
+    always-on rather than only running while a client had subscribed
+    to it. Without this gate, that thread's own read_available() polls
+    -- which start firing the instant a KAMDaemon is constructed, well
+    before a test's own connect_station()/disconnect_station()/etc.
+    call ever runs -- would race the test and silently steal its
+    pre-queued response chunks. Real hardware never has this problem
+    (nothing arrives on the wire before the command that provokes it),
+    so gating on "has anything been written yet" makes this fake match
+    that reality instead of assuming it's the only reader.
     """
 
     def __init__(self, chunks=()):
@@ -176,10 +189,13 @@ class CannedSerial:
 
     @property
     def in_waiting(self):
-        return len(self._chunks[0]) if self._chunks else 0
+        if not self.written or not self._chunks:
+            return 0
+
+        return len(self._chunks[0])
 
     def read(self, n):
-        if not self._chunks:
+        if not self.written or not self._chunks:
             return b""
 
         return self._chunks.pop(0)

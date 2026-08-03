@@ -169,7 +169,10 @@ TERMINAL_HTML = """<!doctype html>
 <div id="terminalPane">
   <div class="paneHeader">
     <span>TERMINAL</span>
-    <a href="#" id="pbbsLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">pbbs</a>
+    <span>
+      <a href="#" id="pbbsLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">pbbs</a>
+      <a href="#" id="mapLink" style="background:none;border:1px solid #345;color:#9c9;font:inherit;font-size:11px;padding:2px 8px;text-decoration:none;">map</a>
+    </span>
   </div>
   <div id="output"></div>
   <div id="inputRow">
@@ -244,6 +247,7 @@ TERMINAL_HTML = """<!doctype html>
   input.focus();
 
   document.getElementById("pbbsLink").href = authedUrl("/pbbs");
+  document.getElementById("mapLink").href = authedUrl("/map");
 
   // -- Live monitor (milestone 5) ------------------------------------
   //
@@ -395,7 +399,10 @@ PBBS_HTML = """<!doctype html>
 <body>
 <div class="paneHeader">
   <span>PBBS</span>
-  <a href="#" id="terminalLink">terminal</a>
+  <span>
+    <a href="#" id="terminalLink">terminal</a>
+    <a href="#" id="mapLink">map</a>
+  </span>
 </div>
 <div id="content">
   <div class="notice">Loading messages...</div>
@@ -413,6 +420,7 @@ PBBS_HTML = """<!doctype html>
   }
 
   document.getElementById("terminalLink").href = authedUrl("/");
+  document.getElementById("mapLink").href = authedUrl("/map");
 
   function escapeHtml(text) {
     var div = document.createElement("div");
@@ -521,6 +529,182 @@ PBBS_HTML = """<!doctype html>
   } else {
     showList();
   }
+})();
+</script>
+</body>
+</html>
+"""
+
+# Milestone 7: a third self-contained page, served at GET /map, showing
+# stations.py's station database on a Leaflet + OpenStreetMap map.
+# Leaflet is loaded from cdnjs (this project's one allowed CDN for
+# browser-side JS, per its own conventions) -- the only external
+# network dependency in this whole project, and only for the browser
+# viewing this page, not for kamxl_rest.py itself (which never talks
+# to the internet). Markers use Leaflet's plain default icon rather
+# than real APRS symbol-table/symbol-code icons -- rendering the full
+# APRS symbol set was scoped out of the MVP (see PROJECT.md), so
+# symbol_table/symbol_code are only shown as text in each marker's
+# popup for now.
+MAP_HTML = """<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>kamxl station map</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: #0b0f10;
+    color: #d4f7d4;
+    font-family: "Courier New", Courier, monospace;
+  }
+  body { display: flex; flex-direction: column; }
+  .paneHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 10px;
+    background: #101617;
+    border-bottom: 1px solid #234;
+    font-size: 12px;
+    letter-spacing: 0.05em;
+    color: #888;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+  }
+  .paneHeader a, .paneHeader button {
+    background: none;
+    border: 1px solid #345;
+    color: #9c9;
+    font: inherit;
+    font-size: 11px;
+    padding: 2px 8px;
+    cursor: pointer;
+    text-decoration: none;
+  }
+  .paneHeader a:hover, .paneHeader button:hover { border-color: #5a8; color: #cfc; }
+  #map { flex: 1; }
+  #empty {
+    position: absolute;
+    top: 50px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    color: #999;
+    font-style: italic;
+    pointer-events: none;
+    z-index: 500;
+  }
+  .leaflet-popup-content { font-family: "Courier New", Courier, monospace; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="paneHeader">
+  <span>STATION MAP <span id="stationCount"></span></span>
+  <a href="#" id="terminalLink">terminal</a>
+</div>
+<div id="empty" style="display:none;">No stations heard yet.</div>
+<div id="map"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function () {
+  var params = new URLSearchParams(location.search);
+  var token = params.get("token") || "";
+  var empty = document.getElementById("empty");
+  var stationCount = document.getElementById("stationCount");
+
+  function authedUrl(path) {
+    if (!token) return path;
+    var sep = path.indexOf("?") === -1 ? "?" : "&";
+    return path + sep + "token=" + encodeURIComponent(token);
+  }
+
+  document.getElementById("terminalLink").href = authedUrl("/");
+
+  var map = L.map("map").setView([0, 0], 2);
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap contributors"
+  }).addTo(map);
+
+  var markers = {};
+  var fitDone = false;
+
+  function relativeTime(epochSeconds) {
+    var deltaSeconds = Math.max(0, (Date.now() / 1000) - epochSeconds);
+
+    if (deltaSeconds < 60) return Math.floor(deltaSeconds) + "s ago";
+    if (deltaSeconds < 3600) return Math.floor(deltaSeconds / 60) + "m ago";
+    if (deltaSeconds < 86400) return Math.floor(deltaSeconds / 3600) + "h ago";
+    return Math.floor(deltaSeconds / 86400) + "d ago";
+  }
+
+  function popupHtml(station) {
+    var html = "<b>" + station.callsign + "</b><br>";
+    html += station.latitude.toFixed(5) + ", " + station.longitude.toFixed(5) + "<br>";
+    if (station.comment) html += station.comment + "<br>";
+    html += "symbol: " + station.symbol_table + station.symbol_code + "<br>";
+    html += "heard " + relativeTime(station.last_heard) +
+      " (" + station.packet_count + " report" +
+      (station.packet_count === 1 ? "" : "s") + ")";
+    return html;
+  }
+
+  async function refresh() {
+    try {
+      var res = await fetch(authedUrl("/stations"));
+      var payload = await res.json();
+
+      if (!payload.ok) return;
+
+      var stations = payload.result;
+      stationCount.textContent = stations.length
+        ? "(" + stations.length + ")"
+        : "";
+      empty.style.display = stations.length ? "none" : "block";
+
+      var seen = {};
+
+      stations.forEach(function (station) {
+        seen[station.callsign] = true;
+
+        var latLng = [station.latitude, station.longitude];
+
+        if (markers[station.callsign]) {
+          markers[station.callsign].setLatLng(latLng);
+          markers[station.callsign].setPopupContent(popupHtml(station));
+        } else {
+          markers[station.callsign] = L.marker(latLng)
+            .addTo(map)
+            .bindPopup(popupHtml(station));
+        }
+      });
+
+      Object.keys(markers).forEach(function (callsign) {
+        if (!seen[callsign]) {
+          map.removeLayer(markers[callsign]);
+          delete markers[callsign];
+        }
+      });
+
+      if (!fitDone && stations.length) {
+        fitDone = true;
+
+        var bounds = stations.map(function (s) {
+          return [s.latitude, s.longitude];
+        });
+
+        map.fitBounds(bounds, { maxZoom: 12, padding: [30, 30] });
+      }
+    } catch (err) {
+      // Transient fetch failure -- next poll will retry.
+    }
+  }
+
+  refresh();
+  setInterval(refresh, 15000);
 })();
 </script>
 </body>
@@ -715,6 +899,9 @@ ROUTES: Tuple[Tuple[str, "re.Pattern", str], ...] = (
     ("GET", re.compile(r"^/pbbs$"), "_h_pbbs_page"),
     ("GET", re.compile(r"^/pbbs/messages$"), "_h_pbbs_list_messages"),
     ("GET", re.compile(r"^/pbbs/messages/(?P<number>\d+)$"), "_h_pbbs_read_message"),
+    ("GET", re.compile(r"^/map$"), "_h_map_page"),
+    ("GET", re.compile(r"^/stations$"), "_h_stations_list"),
+    ("GET", re.compile(r"^/stations/(?P<callsign>[A-Za-z0-9\-]+)$"), "_h_stations_get"),
 )
 
 
@@ -1092,6 +1279,29 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
             read_timeout=read_timeout,
             _socket_timeout=connect_timeout + read_timeout + 40,
         )
+
+    # -- Stations / map (milestone 7) ------------------------------------
+    #
+    # Unlike PBBS, these never drive a connect/command/disconnect
+    # cycle -- stations.list/stations.get just read the daemon's
+    # already-built-up, in-memory StationTracker (fed passively by its
+    # always-on monitor thread), so the default socket timeout is
+    # plenty and no per-call _socket_timeout override is needed.
+
+    def _h_map_page(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        body = MAP_HTML.encode("utf-8")
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _h_stations_list(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        self._relay("stations.list")
+
+    def _h_stations_get(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        self._relay("stations.get", callsign=params["callsign"])
 
 
 # ---------------------------------------------------------------------------

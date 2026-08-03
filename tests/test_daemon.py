@@ -435,7 +435,7 @@ class MonitorSubscribeTests(DaemonTestCase):
     # line arrives (see packet.py's PacketParser docstring), so this
     # includes a third header purely to complete the second packet --
     # otherwise it would just sit pending, waiting for the monitor
-    # loop to stop and flush it (see test_unsubscribe_flushes_pending_packet
+    # loop to stop and flush it (see test_shutdown_stops_monitor_thread
     # below for that path instead).
     CHUNKS = [
         "KD5EOC-10>BEACON/2:\r\n",
@@ -482,14 +482,33 @@ class MonitorSubscribeTests(DaemonTestCase):
         final = client.call("status")
         self.assertEqual(final["result"]["monitor_subscribers"], 0)
 
-    def test_disconnect_stops_monitor_thread(self):
-        # A background monitor thread that outlives its last
-        # subscriber would be a real resource leak -- confirm it
-        # actually stops (and flushes/discards cleanly, rather than
-        # raising) once the only client goes away.
+    def test_monitor_thread_starts_with_no_subscribers(self):
+        # Milestone 7: the monitor thread is now always-on from the
+        # moment a KAMDaemon is constructed, not started on-demand by
+        # the first monitor.subscribe() -- needed so the station
+        # database (stations.py) builds passively even if nobody ever
+        # opens the map page or a live monitor pane. Confirm it's
+        # already running with zero subscribers, rather than only
+        # after the first one connects.
+        daemon, _ = self.start_daemon(ChunkSerial([]))
+
+        self.assertIsNotNone(daemon._monitor_thread)
+        self.assertTrue(daemon._monitor_thread.is_alive())
+
+        with daemon._subscribers_lock:
+            self.assertEqual(len(daemon._subscribers), 0)
+
+    def test_monitor_thread_outlives_last_subscriber(self):
+        # The milestone 5/6 behavior stopped the monitor thread once
+        # its last subscriber left (a background thread outliving
+        # every subscriber was a real resource leak back then, since
+        # broadcasting packets was the thread's only job). Milestone 7
+        # deliberately changed that: the thread now also feeds the
+        # always-on station tracker, so it has a reason to keep
+        # running with zero subscribers -- confirm it does.
         daemon, socket_path = self.start_daemon(ChunkSerial([
             "N0CALL>BEACON/2:\r\n",
-            "final packet, never followed by another header\r\n",
+            "still going after the last subscriber leaves\r\n",
         ]))
         client = self.connect(socket_path)
 
@@ -497,20 +516,121 @@ class MonitorSubscribeTests(DaemonTestCase):
         time.sleep(0.3)  # let the monitor loop pick up the chunks
 
         client.close()
+        time.sleep(0.3)  # give an (incorrect) stop a moment to happen
+
+        self.assertTrue(daemon._monitor_thread.is_alive())
+
+        with daemon._subscribers_lock:
+            self.assertEqual(len(daemon._subscribers), 0)
+
+    def test_shutdown_stops_monitor_thread(self):
+        # The always-on thread still needs to stop *somewhere* --
+        # confirm daemon.shutdown() does it (and flushes/discards
+        # whatever was still pending, rather than raising), now that
+        # "last subscriber leaves" no longer does.
+        daemon, socket_path = self.start_daemon(ChunkSerial([
+            "N0CALL>BEACON/2:\r\n",
+            "final packet, never followed by another header\r\n",
+        ]))
+        self.connect(socket_path)
 
         deadline = time.monotonic() + 2
         while (
-            daemon._monitor_thread is not None
-            and daemon._monitor_thread.is_alive()
+            not daemon._monitor_thread.is_alive()
             and time.monotonic() < deadline
         ):
             time.sleep(0.02)
 
-        self.assertIsNotNone(daemon._monitor_thread)
+        self.assertTrue(daemon._monitor_thread.is_alive())
+
+        daemon.shutdown()
+
+        deadline = time.monotonic() + 2
+        while (
+            daemon._monitor_thread.is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.02)
+
         self.assertFalse(daemon._monitor_thread.is_alive())
 
-        with daemon._subscribers_lock:
-            self.assertEqual(len(daemon._subscribers), 0)
+
+class StationsTests(DaemonTestCase):
+    """
+    Milestone 7: the always-on monitor thread (see
+    MonitorSubscribeTests above) decodes APRS position reports out of
+    ordinary MONITOR traffic into stations.py's StationTracker --
+    with no monitor.subscribe() call required, unlike packet events.
+    """
+
+    def _wait_for_stations(self, client, timeout=2):
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() < deadline:
+            response = client.call("stations.list")
+            stations = response["result"]
+
+            if stations:
+                return stations
+
+            time.sleep(0.05)
+
+        return []
+
+    def test_stations_list_reflects_decoded_position(self):
+        _, socket_path = self.start_daemon(ChunkSerial([
+            "AI6K-9>APRS/1:\r\n",
+            "!4903.50N/07201.75W-Test comment\r\n",
+            "N0CALL>BEACON/1:\r\n",  # completes the AI6K-9 packet
+        ]))
+        client = self.connect(socket_path)
+
+        stations = self._wait_for_stations(client)
+
+        self.assertEqual(len(stations), 1)
+        self.assertEqual(stations[0]["callsign"], "AI6K-9")
+        self.assertAlmostEqual(
+            stations[0]["latitude"], 49 + 3.50 / 60, places=6
+        )
+        self.assertEqual(stations[0]["comment"], "Test comment")
+
+    def test_stations_get_known_callsign(self):
+        _, socket_path = self.start_daemon(ChunkSerial([
+            "AI6K-9>APRS/1:\r\n",
+            "!4903.50N/07201.75W-Test comment\r\n",
+            "N0CALL>BEACON/1:\r\n",
+        ]))
+        client = self.connect(socket_path)
+
+        self._wait_for_stations(client)
+
+        response = client.call("stations.get", callsign="AI6K-9")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"]["callsign"], "AI6K-9")
+
+    def test_stations_get_unknown_callsign_returns_none(self):
+        _, socket_path = self.start_daemon(ChunkSerial([]))
+        client = self.connect(socket_path)
+
+        response = client.call("stations.get", callsign="NOBODY")
+
+        self.assertTrue(response["ok"])
+        self.assertIsNone(response["result"])
+
+    def test_stations_list_empty_when_no_position_traffic(self):
+        _, socket_path = self.start_daemon(ChunkSerial([
+            "N0CALL>BEACON/1:\r\n",
+            "just chatter, no position report\r\n",
+        ]))
+        client = self.connect(socket_path)
+
+        time.sleep(0.3)  # let the monitor loop pick it up either way
+
+        response = client.call("stations.list")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["result"], [])
 
 
 if __name__ == "__main__":

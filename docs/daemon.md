@@ -37,10 +37,13 @@ individual packet broadcasts, and the raw text pulled off the wire
 before it's even parsed (`DEBUG` level) -- both off by default since
 a busy MONITOR session could otherwise flood the terminal. The raw
 line is useful for telling "nothing arrived" apart from "something
-arrived but didn't look like a packet header" -- e.g. the KAM-XL's
-own `<C>`/`<UA>`/`<UI>`-style control-packet annotations (shown by
-default via `MCOM`/`MRESP`), which `packet.py`'s `HEADER_RE` doesn't
-currently recognize and so won't produce a `packet` event.
+arrived but didn't look like a packet header" -- e.g. a line
+`packet.py`'s `HEADER_RE` doesn't recognize for some other reason.
+(A real, since-fixed version of that exact failure mode: an earlier
+`HEADER_RE` had no allowance at all for the KAM-XL's own
+`<C>`/`<UA>`/`<UI>`-style control-packet annotations, shown by default
+via `MCOM`/`MRESP` -- meaning *no* real-hardware MONITOR line ever
+matched, silently. See PROJECT.md's milestone 5 notes.)
 
 ```
 20:29:03 conn-5344: connected
@@ -107,10 +110,12 @@ omitted to use their default.
 | `send_connected` | `text`, `add_cr` (optional) |
 | `read_connected` | `timeout` (optional) |
 | `disconnect_station` | `timeout` (optional), `command_mode_timeout` (optional, default 5) -- separately bounds the initial Ctrl-C-back-to-Command-mode step, which runs before the DISCONNECT confirmation itself |
-| `monitor.subscribe` | *(none)* -- this connection starts receiving `packet` events |
+| `monitor.subscribe` | *(none)* -- this connection starts receiving `packet` events (the background monitor thread itself is always running -- see "Concurrency model" below -- subscribing only affects whether *this connection* gets events pushed to it) |
 | `monitor.unsubscribe` | *(none)* -- stops them |
 | `pbbs.list_messages` | `mypbbs` (optional), `connect_timeout` (optional, default 15), `read_timeout` (optional, default 10, worst-case ceiling -- see below) -- drives a full connect/`L`/disconnect cycle against the KAM-XL's own firmware PBBS; returns a list of `PBBSMessageSummary` dicts. Verified against real hardware for both an empty and a populated mailbox. |
 | `pbbs.read_message` | `number`, `mypbbs`/`connect_timeout`/`read_timeout` (all optional, same as above) -- connect/`R n`/disconnect; returns a `PBBSMessage` dict, or `null` if the number didn't resolve to a message |
+| `stations.list` | *(none, milestone 7)* -- returns every known `Station` (see `stations.py`) as a list of dicts, sorted by callsign. Built passively by the always-on monitor thread decoding APRS position reports -- no `monitor.subscribe` needed. |
+| `stations.get` | `callsign` -- one `Station` dict, or `null` if never heard |
 
 `read_timeout` is a worst-case ceiling, not a fixed wait: the KAM-XL
 library polls the connected-mode response in short slices and returns
@@ -132,12 +137,22 @@ Multiple client connections are handled concurrently (one thread per
 connection), but their actual `KAMXL` calls are serialized behind that
 lock.
 
-Monitoring runs in its own background thread, started on the first
-`monitor.subscribe` and stopped once the last subscriber disconnects
-or unsubscribes. Rather than holding the lock for the whole loop, it
-polls in short bursts (~50ms), briefly acquiring the lock each time --
-so ordinary `get`/`set` requests can still interleave with an active
-monitor session instead of blocking for its entire duration.
+Monitoring runs in its own background thread. Rather than holding the
+lock for the whole loop, it polls in short bursts (~50ms), briefly
+acquiring the lock each time -- so ordinary `get`/`set` requests can
+still interleave with it instead of blocking for its entire duration.
+
+**Always on, since milestone 7.** Through milestone 6, this thread
+started on the first `monitor.subscribe` and stopped once the last
+subscriber disconnected or unsubscribed -- fine when broadcasting
+`packet` events to a live monitor pane was its only job. Milestone 7
+added a station database (`stations.py`) that needs to build up
+passively from whatever MONITOR traffic the KAM-XL sees, whether or
+not anyone has the map page (or any monitor client) open -- so the
+thread now starts the moment a `KAMDaemon` is constructed and only
+stops on `shutdown()`. `monitor.subscribe`/`unsubscribe` still control
+whether *that connection* receives `packet` events, but no longer have
+any bearing on whether the thread itself runs.
 
 ### Known limitation
 
@@ -153,6 +168,17 @@ folded into) that response -- this is a pre-existing characteristic of
 daemon. Not yet hit in testing; noted here per this project's
 practice of writing down real constraints rather than assuming a
 locking scheme has fully solved them.
+
+Milestone 7's always-on monitor thread makes this limitation more
+likely to actually surface in practice than it was through milestone
+6 (when it only ran while a monitor pane happened to be open) --
+there's now effectively always a background reader polling between
+commands. It doesn't introduce any *new* risk beyond what's described
+above (the lock still fully serializes each individual command against
+the polling thread), just more opportunities for real MONITOR traffic
+to legitimately be waiting in the gap right before a command starts.
+Worth watching for if PBBS/connect responses ever look corrupted or
+interleaved with unrelated MONITOR text on real hardware.
 
 ## Testing
 

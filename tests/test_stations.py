@@ -1,0 +1,145 @@
+import unittest
+
+from fakes import make_kam  # noqa: F401 (ensures kamxl/ is on sys.path)
+
+from packet import Packet
+from stations import StationTracker
+
+
+def _ui_packet(source, payload, port=1):
+    return Packet(
+        source=source,
+        destination="APRS",
+        digipeaters=(),
+        port=port,
+        payload=payload,
+        raw=f"{source}>APRS/{port}: <UI>:\n{payload}",
+        frame_type="UI",
+    )
+
+
+def _control_packet(source, frame_type):
+    return Packet(
+        source=source,
+        destination="N0CALL",
+        digipeaters=(),
+        port=1,
+        payload="",
+        raw="",
+        frame_type=frame_type,
+    )
+
+
+class StationTrackerTests(unittest.TestCase):
+    def test_position_packet_creates_station(self):
+        tracker = StationTracker()
+
+        station = tracker.update(
+            _ui_packet("AI6K-9", "!4903.50N/07201.75W-Test"),
+            now=1000.0,
+        )
+
+        self.assertIsNotNone(station)
+        self.assertEqual(station.callsign, "AI6K-9")
+        self.assertAlmostEqual(station.latitude, 49 + 3.50 / 60, places=6)
+        self.assertEqual(station.last_heard, 1000.0)
+        self.assertEqual(station.packet_count, 1)
+
+        self.assertEqual(tracker.get_station("AI6K-9"), station)
+        self.assertEqual(tracker.list_stations(), [station])
+
+    def test_non_ui_frame_ignored(self):
+        tracker = StationTracker()
+
+        # A "C" (connect) control frame never carries an APRS
+        # payload -- update() should skip attempting to parse it
+        # entirely, not just fail to find a position in empty text.
+        result = tracker.update(_control_packet("N0CALL", "C"))
+
+        self.assertIsNone(result)
+        self.assertEqual(tracker.list_stations(), [])
+
+    def test_frame_type_none_still_considered(self):
+        # frame_type is None when MCOM/MRESP tags were off (or a
+        # header line didn't carry one) -- still treated as
+        # potentially-APRS, same as an explicit "UI" tag.
+        packet = _ui_packet("AI6K-9", "!4903.50N/07201.75W-")
+        packet = Packet(
+            source=packet.source,
+            destination=packet.destination,
+            digipeaters=packet.digipeaters,
+            port=packet.port,
+            payload=packet.payload,
+            raw=packet.raw,
+            frame_type=None,
+        )
+
+        tracker = StationTracker()
+        station = tracker.update(packet)
+
+        self.assertIsNotNone(station)
+
+    def test_non_position_payload_ignored(self):
+        tracker = StationTracker()
+
+        result = tracker.update(_ui_packet("AI6K-9", "Just chatter"))
+
+        self.assertIsNone(result)
+        self.assertEqual(tracker.list_stations(), [])
+
+    def test_second_report_updates_existing_station(self):
+        tracker = StationTracker()
+
+        tracker.update(
+            _ui_packet("AI6K-9", "!4903.50N/07201.75W-"), now=1000.0
+        )
+        second = tracker.update(
+            _ui_packet("AI6K-9", "!4900.00N/07200.00W-"), now=2000.0
+        )
+
+        self.assertEqual(second.packet_count, 2)
+        self.assertEqual(second.last_heard, 2000.0)
+        self.assertAlmostEqual(second.latitude, 49.0, places=6)
+
+        # Only the latest position is kept -- one row per callsign.
+        self.assertEqual(tracker.list_stations(), [second])
+
+    def test_different_ssids_are_distinct_stations(self):
+        tracker = StationTracker()
+
+        tracker.update(_ui_packet("AI6K-1", "!4903.50N/07201.75W-"))
+        tracker.update(_ui_packet("AI6K-9", "!4900.00N/07200.00W-"))
+
+        callsigns = {s.callsign for s in tracker.list_stations()}
+        self.assertEqual(callsigns, {"AI6K-1", "AI6K-9"})
+
+    def test_list_stations_sorted_by_callsign(self):
+        tracker = StationTracker()
+
+        tracker.update(_ui_packet("WB5NZV", "!4903.50N/07201.75W-"))
+        tracker.update(_ui_packet("AI6K-9", "!4900.00N/07200.00W-"))
+        tracker.update(_ui_packet("KD5EOC", "!4901.00N/07200.00W-"))
+
+        callsigns = [s.callsign for s in tracker.list_stations()]
+        self.assertEqual(callsigns, ["AI6K-9", "KD5EOC", "WB5NZV"])
+
+    def test_get_unknown_callsign_returns_none(self):
+        tracker = StationTracker()
+
+        self.assertIsNone(tracker.get_station("NOBODY"))
+
+    def test_uses_wall_clock_when_now_not_supplied(self):
+        # Doesn't stub time.time() -- just checks a real value came
+        # back, proving the "now is None" default path runs at all.
+        tracker = StationTracker()
+
+        station = tracker.update(
+            _ui_packet("AI6K-9", "!4903.50N/07201.75W-")
+        )
+
+        self.assertIsNotNone(station)
+        self.assertGreater(station.last_heard, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

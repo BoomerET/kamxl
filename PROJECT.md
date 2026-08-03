@@ -282,7 +282,84 @@ foundation -- Milestone 1 here. Direction as of now:
    (`read_connected()`'s "collect for N seconds" semantics doesn't
    compose cleanly that way -- found this the hard way while writing
    these tests, not while testing hardware).
-7. **APRS mapping and station database**.
+7. **APRS mapping and station database** -- done. Three architecture
+   questions were asked upfront (asked directly rather than assumed,
+   same pattern as milestone 6): persistence (in-memory only, chosen
+   over SQLite -- simplest for an MVP, rebuilds naturally as traffic
+   arrives), map rendering (Leaflet + OpenStreetMap tiles from a CDN,
+   chosen over a tile-free scatter plot -- worth the one external
+   dependency, and it's entirely client-side, loaded by the browser
+   viewing the page, not by `kamxl_rest.py` itself), and parsing scope
+   (position reports only for the MVP -- status/message/object/weather
+   APRS data types are out of scope for now, same "scope the MVP down"
+   instinct as milestone 6's read-only PBBS choice).
+
+   New `aprs.py`: `parse_position(payload)` decodes an AX.25 UI-frame
+   payload as an APRS uncompressed position report (`AprsPosition` --
+   latitude/longitude, symbol table/code, comment, raw timestamp text)
+   or returns `None` for anything else, including the *compressed*
+   position format (denser base-91 encoding some trackers default to)
+   -- deliberately unsupported for now rather than guessed at. Built
+   from the public APRS Protocol Reference spec, not the KAM-XL
+   manual, since APRS is an open protocol layered on top of ordinary
+   AX.25 UI frames, not a KAM-XL-specific behavior.
+
+   New `stations.py`: `StationTracker` decodes `Packet`s into `Station`
+   records (one per source callsign -- different SSIDs are distinct
+   stations, per normal APRS convention), keeping only the latest
+   known position per callsign, no history. Only ever attempts to
+   parse ordinary UI frames (`frame_type` is `None` or `"UI"`) --
+   AX.25 connect-session control/supervisory frames never carry APRS
+   payloads, so those are skipped before parsing is even attempted.
+
+   `kamxl_daemon.py` gained `stations.list`/`stations.get` and a
+   shared `StationTracker` instance, fed by the existing monitor
+   thread's decoded packets. This required a real, deliberate
+   behavior change to that thread: through milestone 6, it only ran
+   while at least one client had called `monitor.subscribe` (started
+   on the first, stopped on the last disconnecting) -- fine when
+   broadcasting `packet` events was its only job, but a station
+   database needs to build up passively over time, whether or not
+   anyone has the map open. Asked directly (third question, alongside
+   persistence and map rendering) and confirmed: the thread is now
+   always on, started the moment a `KAMDaemon` is constructed and
+   stopped only by `shutdown()`. `kamxl_rest.py` gained `GET
+   /stations`, `GET /stations/<CALLSIGN>`, and a third self-contained
+   page at `GET /map` (Leaflet markers, popups with position/comment/
+   last-heard, polls `/stations` every 15s), linked from the terminal
+   and PBBS pages' headers, and back again.
+
+   **Found while writing tests, not while testing hardware**: making
+   the monitor thread always-on broke several existing daemon/REST
+   tests that use `CannedSerial` (`ConnectStationTests`,
+   `ConnectedModePassthroughTests`, and their `kamxl_rest.py`
+   equivalents) -- not a production bug, but a real race in the test
+   suite's own fakes. `CannedSerial` hands out its pre-queued response
+   chunks to *whichever* caller reads next, with no concept of "this
+   chunk is meant for a specific later operation" -- harmless when
+   nothing else was reading, but the now-always-on monitor thread
+   starts polling the instant a `KAMDaemon` is constructed, well
+   before a test's own `connect_station()`/etc. call ever runs, and
+   was winning the race to steal the first queued chunk before the
+   real operation even started. On actual hardware this isn't
+   possible -- nothing arrives on the wire before the command that
+   provokes it, unlike a fake with everything pre-loaded up front. Fixed
+   by gating `CannedSerial`'s chunks behind at least one `write()`
+   having happened first (see `tests/fakes.py`), which makes the fake
+   match that reality instead of assuming it's the only reader; three
+   low-level `_read_until_any()` tests in `tests/test_connect.py` that
+   legitimately read without any preceding write (testing that method
+   in isolation) needed one added to match how it's actually invoked
+   everywhere else in the codebase.
+
+   **Unverified against a real captured APRS session.** Like PBBS
+   before its own real-hardware pass, `aprs.py`'s parsing is a
+   best-effort first draft against the spec, not confirmed against
+   real traffic. Milestone 5's live monitor pane was already confirmed
+   against real APRS traffic at 144.39 MHz, so decoded packets should
+   start flowing once this is checked for real -- expect adjustment
+   the same way `packet.py`'s `HEADER_RE` and `pbbs.py`'s parsing both
+   needed it. 158/158 tests passing at time of writing.
 8. **Plugins for Wavelog, Winlink, and Home Assistant**.
 
 ---

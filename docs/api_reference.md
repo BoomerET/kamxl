@@ -1,8 +1,8 @@
 # API Reference
 
-Covers the public surface of `kamxl.py` and `packet.py`. Anything
-prefixed with `_` is internal and not covered here (see source
-comments instead).
+Covers the public surface of `kamxl.py`, `packet.py`, `pbbs.py`,
+`aprs.py`, and `stations.py`. Anything prefixed with `_` is internal
+and not covered here (see source comments instead).
 
 ## `KAMXL`
 
@@ -239,5 +239,73 @@ class PBBSMessage:
 `PBBSMessageSummary` is one row of `list_pbbs_messages()`'s result;
 `PBBSMessage` is `read_pbbs_message()`'s result. Both are parsed from
 the KAM-XL's own PBBS command output by `pbbs.parse_message_list()`
-and `pbbs.parse_message()` respectively -- **unverified against real
-hardware**, see the PBBS methods section above.
+and `pbbs.parse_message()` respectively. The message-read format
+(`PBBSMessage`) has now been verified against real hardware, including
+a real truncation bug found and fixed (see the PBBS methods section
+above). The message-*list* row format (`PBBSMessageSummary`) is still
+only built from the manual's documented example -- unverified against
+a real populated mailbox listing.
+
+## `AprsPosition`
+
+*(from `aprs.py`, milestone 7)*
+
+```python
+@dataclass(frozen=True)
+class AprsPosition:
+    latitude: float
+    longitude: float
+    symbol_table: str
+    symbol_code: str
+    comment: str
+    timestamp: Optional[str]   # raw APRS timestamp text, not decoded
+    raw: str
+```
+
+`aprs.parse_position(payload)` decodes an AX.25 UI-frame payload
+(`Packet.payload`) as an APRS uncompressed position report, returning
+`None` for anything else -- any other APRS data type (status, message,
+object, weather, ...), a *compressed* position report (not supported
+yet), or non-APRS traffic entirely. MVP scope, chosen deliberately:
+position reports are what a map needs; everything else was scoped out
+for now. See the module docstring for two other known simplifications
+(compressed positions unsupported, position ambiguity not fully
+modeled). Built from the public APRS Protocol Reference spec, not
+reverse-engineered from the KAM-XL manual, but still treated with the
+project's usual caution -- unverified against a real captured APRS
+session.
+
+## `Station` / `StationTracker`
+
+*(from `stations.py`, milestone 7)*
+
+```python
+@dataclass(frozen=True)
+class Station:
+    callsign: str
+    latitude: float
+    longitude: float
+    symbol_table: str
+    symbol_code: str
+    comment: str
+    last_heard: float    # time.time() epoch seconds
+    packet_count: int
+```
+
+`StationTracker` maintains an in-memory "who's where" database, one
+`Station` per source callsign (SSIDs are distinct stations), keeping
+only the latest known position -- no history, no persistence across
+restarts (a deliberate MVP choice; see PROJECT.md). Fed by
+`update(packet, now=None)`, which only even attempts
+`aprs.parse_position()` for ordinary UI frames (`packet.frame_type` is
+`None` or `"UI"`) -- AX.25 connect-session control/supervisory frames
+never carry APRS payloads. `kamxl_daemon.py`'s always-on monitor
+thread feeds every packet it sees to a shared `StationTracker`
+instance, so the database builds passively over time, whether or not
+a client is actually watching.
+
+| Method | Description |
+| --- | --- |
+| `update(packet, now=None)` | Feed one `Packet` in. Returns the resulting `Station` if it decoded as a position report, `None` otherwise. |
+| `list_stations()` | All known stations, sorted by callsign. |
+| `get_station(callsign)` | One station, or `None` if never heard. |
