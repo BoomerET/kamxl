@@ -97,6 +97,9 @@ call actually does.
 | POST | `/winlink/check` | `{"gateway", "password", "mycall"?, "connect_timeout"?, "read_timeout"?}` | Check/download Winlink mail, see [Winlink](#winlink) |
 | POST | `/winlink/send` | `{"gateway", "password", "messages": [{"to", "subject", "body", "cc"?, "msg_type"?, "mid"?}, ...], "mycall"?, "connect_timeout"?, "read_timeout"?}` | Send 1-5 Winlink messages, see [Winlink](#winlink) |
 | GET | `/winlink` | | Serves the Winlink web page (check-mail and send-mail tabs) |
+| GET | `/winlink/account/<CALLSIGN>` | | Does `<CALLSIGN>` have an active Winlink account? See [Winlink web-service API](#winlink-web-service-api) |
+| GET | `/winlink/gateways?mode=&history_hours=&service_codes=` | | Gateway/channel listing, see [Winlink web-service API](#winlink-web-service-api) |
+| GET | `/winlink/gateways/nearby?lat=&lon=&max_distance_km=&limit=` | | Gateway listing sorted by distance from a point, see [Winlink web-service API](#winlink-web-service-api) |
 
 Multi-port values (`MYCALL`, `HBAUD`, `MONITOR`, ...) cross the wire
 as JSON arrays: `{"value": [true, false]}`.
@@ -421,6 +424,45 @@ if none were -- not itself an error). The `/winlink` page's "Send
 mail" tab wraps this in a small form (To/Cc/Subject/body), same
 password-hygiene posture as the check-mail tab (never persisted,
 cleared after every submit).
+
+## Winlink web-service API
+
+August 2026, once Dave's `kamxl_winlink` API key came through from the
+WDT. A completely different Winlink surface from everything above:
+these three endpoints call `api.winlink.org`'s HTTPS/JSON API
+(`winlink_api.py`), not the KAM-XL's own AX.25/B2F session at all --
+no serial port, no `connect_timeout`/`read_timeout`, no password
+either, so plain `GET` with query params is fine here (unlike
+`/winlink/check`/`/winlink/send`, which need `POST`/JSON specifically
+to keep a real account password out of a URL). The daemon reads the
+actual API key itself from `$WINLINK_API_KEY` (see
+[daemon.md](daemon.md#winlink-api-key)) -- this REST layer never
+handles that key, and none of these three endpoints will work until
+it's set on the daemon's own environment.
+
+```
+curl -H "Authorization: Bearer $TOKEN" \
+  http://kam-host:8080/winlink/account/AI6K
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://kam-host:8080/winlink/gateways?service_codes=PUBLIC"
+
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://kam-host:8080/winlink/gateways/nearby?lat=33.0&lon=-97.0&limit=5"
+```
+
+`/winlink/gateways`'s `service_codes` accepts a comma-separated list
+(`PUBLIC,EMCOMM`) -- defaults to `PUBLIC` alone if omitted, matching
+`winlink_api.get_gateway_status()`'s own default. `/winlink/gateways/nearby`
+requires `lat`/`lon`; `max_distance_km`/`limit` are optional filters
+applied after sorting nearest-first. Neither `/winlink/gateways` nor
+`/winlink/gateways/nearby` is a verified Winlink API operation in the
+"proximity" sense -- see `winlink_api.py`'s module docstring's "NOT
+CONFIRMED" note: the distance sort is plain client-side geometry over
+data `gateway/status.json` already returns, not a separate WDT
+endpoint. All three endpoints (and the underlying `winlink_api.py`
+module) are themselves unverified against the live API with a real
+key -- see PROJECT.md's "Winlink Web Service API" milestone.
 
 ## Testing
 

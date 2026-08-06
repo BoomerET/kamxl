@@ -46,6 +46,8 @@ import time
 
 from typing import Any, Callable, Dict, List, Optional, Set
 
+import winlink_api
+
 from kamxl import KAMXL, KAMError
 from packet import Packet, PacketParser
 from stations import StationTracker
@@ -115,6 +117,9 @@ class KAMDaemon:
             "pbbs.read_message": self._m_pbbs_read_message,
             "winlink.check_mail": self._m_winlink_check_mail,
             "winlink.send_message": self._m_winlink_send_message,
+            "winlink.account_exists": self._m_winlink_account_exists,
+            "winlink.gateway_status": self._m_winlink_gateway_status,
+            "winlink.nearby_gateways": self._m_winlink_nearby_gateways,
             "monitor.subscribe": self._m_monitor_subscribe,
             "monitor.unsubscribe": self._m_monitor_unsubscribe,
             "stations.list": self._m_stations_list,
@@ -303,6 +308,69 @@ class KAMDaemon:
             )
 
         return accepted_mids
+
+    def _require_winlink_api_key(self) -> str:
+        # Deliberately an env var only, read fresh on every call --
+        # no --winlink-api-key CLI flag (chosen over the alternatives
+        # specifically so the key never has to touch a config file or
+        # show up in a process listing/shell history), and no need to
+        # restart the daemon to pick up a change either.
+        api_key = os.environ.get("WINLINK_API_KEY")
+
+        if not api_key:
+            raise KAMError(
+                "WINLINK_API_KEY is not set -- the Winlink web-service "
+                "API (account lookups, gateway listings) needs the "
+                "access key issued by the Winlink Development Team. "
+                "See PROJECT.md's \"Winlink Web Service API\" milestone."
+            )
+
+        return api_key
+
+    def _m_winlink_account_exists(self, params: Dict[str, Any]) -> bool:
+        # Never touches self.kam/_kam_lock -- this is a plain HTTPS
+        # call to api.winlink.org, nothing to do with the KAM-XL or
+        # its serial port at all. Holding _kam_lock for the duration
+        # of a network round-trip would needlessly block ordinary
+        # KAM-XL commands for no reason.
+        return winlink_api.account_exists(
+            params["callsign"], self._require_winlink_api_key()
+        )
+
+    def _m_winlink_gateway_status(
+        self, params: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        gateways = winlink_api.get_gateway_status(
+            self._require_winlink_api_key(),
+            mode=params.get("mode", "AnyAll"),
+            history_hours=params.get("history_hours", 48),
+            service_codes=tuple(params.get("service_codes", ["PUBLIC"])),
+        )
+
+        return [dataclasses.asdict(gateway) for gateway in gateways]
+
+    def _m_winlink_nearby_gateways(
+        self, params: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        gateways = winlink_api.get_gateway_status(
+            self._require_winlink_api_key(),
+            mode=params.get("mode", "AnyAll"),
+            history_hours=params.get("history_hours", 48),
+            service_codes=tuple(params.get("service_codes", ["PUBLIC"])),
+        )
+
+        results = winlink_api.nearby_gateways(
+            gateways,
+            float(params["latitude"]),
+            float(params["longitude"]),
+            max_distance_km=params.get("max_distance_km"),
+            limit=params.get("limit"),
+        )
+
+        return [
+            {"gateway": dataclasses.asdict(gateway), "distance_km": distance}
+            for gateway, distance in results
+        ]
 
     def _m_monitor_subscribe(self, params: Dict[str, Any]) -> None:
         # Actual subscriber-set membership is handled by the request

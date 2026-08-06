@@ -40,6 +40,24 @@ terminal (e.g. `minicom`) first -- see
 [troubleshooting.md](troubleshooting.md#every-command-times-out-after-a-firmware-flash)
 for how to reset it to a known rate with `ABAUD`.
 
+### Winlink API key
+
+`winlink.account_exists`/`winlink.gateway_status`/`winlink.nearby_gateways`
+(see the methods table below) need an API key issued by the Winlink
+Development Team, read from the `WINLINK_API_KEY` environment
+variable -- deliberately no `--winlink-api-key` flag, chosen
+specifically so the key never has to touch a config file or show up
+in a process listing/shell history. Read fresh on every call (no
+daemon restart needed to pick up a change). If unset, those three
+methods raise a clear `KAMError` rather than failing some other way;
+every other method works fine without it -- it's only needed for
+those three.
+
+```
+export WINLINK_API_KEY=...
+python3 kamxl_daemon.py --port COM8 --socket /tmp/kamxl.sock
+```
+
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.
 
@@ -130,6 +148,9 @@ omitted to use their default.
 | `stations.get` | `callsign` -- one `Station` dict, or `null` if never heard |
 | `winlink.check_mail` | `gateway`, `password`, `mycall` (optional), `connect_timeout` (optional, default 60), `read_timeout` (optional, default 30, milestone 8) -- connects to a Winlink RMS Packet gateway, logs in, downloads up to one block of waiting mail; returns a list of `WinlinkMessage` dicts. `password` is never logged anywhere on this request's path (see kamxl_daemon.py's `_m_winlink_check_mail()`). |
 | `winlink.send_message` | `gateway`, `password`, `messages` (a list of 1-5 dicts, each with `to` (list), `subject`, `body`, and optionally `cc` (list)/`msg_type`/`mid`), `mycall` (optional), `connect_timeout`/`read_timeout` (optional, same defaults as above) -- send-support extension: connects, logs in, proposes the given message(s) via B2, uploads whatever the gateway accepts, declines whatever the gateway offers back (never downloads -- that's still `winlink.check_mail`'s job). Returns a list of the MIDs actually accepted. Text-body-only, no attachments -- see `winlink.py`'s module docstring's "SEND SUPPORT" note for the full scope, and its UNVERIFIED-AGAINST-A-REAL-GATEWAY caveat. `password` is never logged (see `_m_winlink_send_message()`). |
+| `winlink.account_exists` | `callsign` -- calls Winlink's HTTP web-service API (`winlink_api.py`, not the KAM-XL at all -- no serial port, no `_kam_lock`). Returns `true`/`false`. Requires `$WINLINK_API_KEY` to be set (see "Winlink API key" below); raises `KAMError` if it isn't. |
+| `winlink.gateway_status` | `mode`/`history_hours`/`service_codes` (all optional, see `winlink_api.get_gateway_status()`) -- same API, same `$WINLINK_API_KEY` requirement. Returns a list of gateway dicts (callsign, location, channels). |
+| `winlink.nearby_gateways` | `latitude`, `longitude`, `max_distance_km`/`limit` (optional) -- fetches the gateway listing, then sorts by client-side great-circle distance (see `winlink_api.py`'s "NOT CONFIRMED" note -- this isn't a separate Winlink API call). Returns a list of `{"gateway": {...}, "distance_km": float}`. |
 
 `read_timeout` is a worst-case ceiling, not a fixed wait: the KAM-XL
 library polls the connected-mode response in short slices and returns

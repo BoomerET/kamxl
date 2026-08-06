@@ -22,6 +22,7 @@ from packet import Packet
 from pbbs import PBBSMessage, PBBSMessageSummary
 from winlink import Proposal, WinlinkMessage
 import kamxl_rest
+import winlink_api
 
 
 class RestTestCase(unittest.TestCase):
@@ -692,6 +693,133 @@ class WinlinkEndpointTests(RestTestCase):
         response.read()
 
         self.assertEqual(response.status, 401)
+
+
+class WinlinkApiEndpointTests(RestTestCase):
+    """
+    The Winlink HTTP web-service API endpoints (account lookups,
+    gateway listings -- winlink_api.py). Unlike WinlinkEndpointTests
+    above, these never touch daemon.kam -- winlink_api.account_exists()/
+    get_gateway_status() are patched directly on the module object
+    kamxl_daemon.py calls through, same technique as
+    tests/test_daemon.py's WinlinkApiTests.
+    """
+
+    def setUp(self):
+        self._old_key = os.environ.get("WINLINK_API_KEY")
+        os.environ["WINLINK_API_KEY"] = "TEST_KEY"
+        self.addCleanup(self._restore_key)
+
+    def _restore_key(self):
+        if self._old_key is None:
+            os.environ.pop("WINLINK_API_KEY", None)
+        else:
+            os.environ["WINLINK_API_KEY"] = self._old_key
+
+    def _patch(self, name, fake):
+        original = getattr(winlink_api, name)
+        setattr(winlink_api, name, fake)
+        self.addCleanup(setattr, winlink_api, name, original)
+
+    def test_account_exists(self):
+        self._patch("account_exists", lambda callsign, api_key, **kwargs: True)
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(port, "GET", "/winlink/account/AI6K")
+
+        self.assertEqual(status, 200)
+        self.assertTrue(payload["result"])
+
+    def test_account_exists_requires_auth_when_enabled(self):
+        self._patch("account_exists", lambda callsign, api_key, **kwargs: True)
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, _ = self.request(
+            port, "GET", "/winlink/account/AI6K", token=None
+        )
+
+        self.assertEqual(status, 401)
+
+    def test_missing_api_key_is_daemon_error(self):
+        os.environ.pop("WINLINK_API_KEY", None)
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(port, "GET", "/winlink/account/AI6K")
+
+        self.assertNotEqual(status, 200)
+        self.assertEqual(payload["error"]["type"], "KAMError")
+        self.assertIn("WINLINK_API_KEY", payload["error"]["message"])
+
+    def test_gateways(self):
+        gateway = winlink_api.Gateway(
+            callsign="KD5EOC-10", base_callsign="KD5EOC",
+            requested_mode="Packet", comments="", last_status="",
+            latitude=33.2, longitude=-97.1, channels=[],
+        )
+        self._patch("get_gateway_status", lambda api_key, **kwargs: [gateway])
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(port, "GET", "/winlink/gateways")
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["result"]), 1)
+        self.assertEqual(payload["result"][0]["callsign"], "KD5EOC-10")
+
+    def test_gateways_service_codes_comma_split(self):
+        captured = {}
+
+        def fake_get_gateway_status(api_key, **kwargs):
+            captured.update(kwargs)
+            return []
+
+        self._patch("get_gateway_status", fake_get_gateway_status)
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        self.request(
+            port, "GET",
+            "/winlink/gateways?service_codes=PUBLIC,EMCOMM"
+        )
+
+        # Daemon layer converts JSON-array params to tuples before
+        # passing them on (same "list -> tuple" convention docs/daemon.md
+        # documents for every other multi-value param).
+        self.assertEqual(captured["service_codes"], ("PUBLIC", "EMCOMM"))
+
+    def test_nearby_gateways(self):
+        near = winlink_api.Gateway(
+            callsign="NEAR-10", base_callsign="NEAR",
+            requested_mode="Packet", comments="", last_status="",
+            latitude=33.05, longitude=-97.05, channels=[],
+        )
+        self._patch("get_gateway_status", lambda api_key, **kwargs: [near])
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "GET", "/winlink/gateways/nearby?lat=33.0&lon=-97.0"
+        )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(len(payload["result"]), 1)
+        self.assertEqual(payload["result"][0]["gateway"]["callsign"], "NEAR-10")
+        self.assertGreater(payload["result"][0]["distance_km"], 0)
+
+    def test_nearby_gateways_missing_lat_is_400(self):
+        self._patch("get_gateway_status", lambda api_key, **kwargs: [])
+
+        _, port = self.start_stack(ScriptedSerial({}))
+
+        status, payload = self.request(
+            port, "GET", "/winlink/gateways/nearby?lon=-97.0"
+        )
+
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["type"], "MissingParam")
 
 
 class StationsEndpointTests(RestTestCase):

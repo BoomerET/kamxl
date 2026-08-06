@@ -1295,6 +1295,9 @@ ROUTES: Tuple[Tuple[str, "re.Pattern", str], ...] = (
     ("GET", re.compile(r"^/stations/(?P<callsign>[A-Za-z0-9\-]+)$"), "_h_stations_get"),
     ("POST", re.compile(r"^/winlink/check$"), "_h_winlink_check_mail"),
     ("POST", re.compile(r"^/winlink/send$"), "_h_winlink_send_message"),
+    ("GET", re.compile(r"^/winlink/account/(?P<callsign>[A-Za-z0-9\-]+)$"), "_h_winlink_account_exists"),
+    ("GET", re.compile(r"^/winlink/gateways/nearby$"), "_h_winlink_gateways_nearby"),
+    ("GET", re.compile(r"^/winlink/gateways$"), "_h_winlink_gateways"),
     ("GET", re.compile(r"^/winlink$"), "_h_winlink_page"),
 )
 
@@ -1821,6 +1824,68 @@ class RESTRequestHandler(BaseHTTPRequestHandler):
             connect_timeout=connect_timeout,
             read_timeout=read_timeout,
             _socket_timeout=connect_timeout + (read_timeout * 3) + 40,
+        )
+
+    # -- Winlink web-service API (August 2026) ----------------------------
+    #
+    # A different Winlink surface entirely from check/send above: these
+    # three call api.winlink.org's HTTP API (winlink_api.py), not the
+    # KAM-XL's own AX.25/B2F session -- no serial port involved, no
+    # account password either, so plain GET with query params is fine
+    # here (unlike check/send, which need POST/JSON specifically to
+    # keep a password out of the URL). The daemon reads the actual
+    # WINLINK_API_KEY itself (see kamxl_daemon.py) -- this REST layer
+    # never sees or handles that key.
+    #
+    # 20s socket-timeout headroom is generous for a single HTTPS
+    # round-trip to api.winlink.org (winlink_api.py's own default is
+    # 15s) -- deliberately not tight, since a slow/loaded WDT server
+    # shouldn't surface here as a raw DaemonTimeout when the daemon
+    # itself is still legitimately waiting on a response.
+
+    def _h_winlink_account_exists(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        self._relay(
+            "winlink.account_exists",
+            callsign=params["callsign"],
+            _socket_timeout=20,
+        )
+
+    def _h_winlink_gateways(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        mode = query.get("mode", ["AnyAll"])[0]
+        history_hours = int(query.get("history_hours", ["48"])[0])
+        service_codes = query.get("service_codes", ["PUBLIC"])
+        if len(service_codes) == 1 and "," in service_codes[0]:
+            service_codes = [code.strip() for code in service_codes[0].split(",")]
+
+        self._relay(
+            "winlink.gateway_status",
+            mode=mode,
+            history_hours=history_hours,
+            service_codes=service_codes,
+            _socket_timeout=20,
+        )
+
+    def _h_winlink_gateways_nearby(self, params: Dict[str, str], query: Dict[str, Any]) -> None:
+        if "lat" not in query or "lon" not in query:
+            self._send_json(400, {
+                "ok": False,
+                "error": {
+                    "type": "MissingParam",
+                    "message": "Missing required query param: 'lat' and/or 'lon'",
+                },
+            })
+            return
+
+        max_distance_km = query.get("max_distance_km", [None])[0]
+        limit = query.get("limit", [None])[0]
+
+        self._relay(
+            "winlink.nearby_gateways",
+            latitude=float(query["lat"][0]),
+            longitude=float(query["lon"][0]),
+            max_distance_km=float(max_distance_km) if max_distance_km else None,
+            limit=int(limit) if limit else None,
+            _socket_timeout=20,
         )
 
 

@@ -942,6 +942,83 @@ foundation -- Milestone 1 here. Direction as of now:
 
    282/282 tests passing.
 
+   ### Update: Winlink Web Service API key granted -- new winlink_api.py module
+
+   The `kamxl_winlink` registration Dave submitted earlier (see the
+   "renamed project to kamxl_winlink" update above) came through. Rob,
+   KM6LBU (Winlink Development Team), replied with an API key granting
+   four permissions: `AccountExists`, `GatewayChannelReport`,
+   `GatewayListing`, `GatewayProximity` -- explicitly for the
+   web-service side (account lookups, gateway listings), not the
+   telnet/B2F client-identity question, which Rob's reply said is
+   handled separately by the app-name string itself (already sent as
+   `kamxl_winlink`, per that earlier update) rather than needing this
+   key at all. Per Rob's own instructions, the key must stay out of
+   the public repo, and the endpoints "should be queried sparingly" --
+   abuse risks revocation.
+
+   This is a genuinely different Winlink surface from everything
+   milestone 8 built: HTTPS/JSON to `api.winlink.org`, no AX.25, no
+   serial port, no KAM-XL involvement at all. New module,
+   `winlink_api.py`, rather than extending `winlink.py` or `kamxl.py`.
+
+   **Research basis, same discipline as every external protocol here**:
+   the WDT's own docs page (`https://api.winlink.org/metadata`) turned
+   out to be a JavaScript-rendered ServiceStack metadata page this
+   session's tooling couldn't fetch (no Chrome extension connected),
+   so every endpoint/format detail was instead cross-checked against
+   Pat (`https://github.com/la5nta/pat`), a real, actively-interoperating
+   open-source Winlink client -- specifically its `internal/cmsapi` Go
+   package, read directly from source. Confirmed real from that:
+   base URL `https://api.winlink.org`; `GET /account/exists` with the
+   key and callsign both in the query string; `POST /gateway/status.json`
+   with the key riding in the form-urlencoded *body* instead (a
+   genuinely different convention between the two endpoints, kept
+   exactly as observed rather than normalized away); and that
+   `/account/exists`'s errors arrive in a nested `ResponseStatus`
+   object while `/gateway/status.json`'s arrive as a bare top-level
+   `ErrorCode` int -- also kept as-is.
+
+   **Could not confirm a separate `GatewayProximity` endpoint.** Pat's
+   client never calls one -- `gateway/status.json`'s own response
+   already carries `Latitude`/`Longitude` per gateway. Working
+   assumption, stated plainly rather than silently guessed at:
+   `GatewayProximity` is the permission gating access to *that*
+   location data, not a distinct server operation. `nearby_gateways()`
+   does the proximity computation client-side (plain haversine
+   great-circle distance, independently cross-checked in
+   `tests/test_winlink_api.py` against one degree of longitude at the
+   equator). **This module is UNVERIFIED AGAINST THE LIVE API** --
+   Dave holds the actual key value, so a real confirmation call (e.g.
+   `account_exists("AI6K", ...)`, a single cheap read, respecting
+   Rob's "query sparingly" ask) can only happen on his end.
+
+   Built: `account_exists()`, `get_gateway_status()` (covers both
+   GatewayListing and GatewayChannelReport -- the WDT doesn't split
+   them across separate URLs), `Gateway`/`GatewayChannel` dataclasses,
+   `nearby_gateways()`. Uses stdlib `urllib` only, no new dependency
+   (same choice `kamxl_rest.py` made for `http.server`), with an
+   injectable `Transport` callable so `tests/test_winlink_api.py` can
+   exercise the real parsing/error-handling logic without ever
+   touching the network -- same fakes-over-mocks discipline as
+   `tests/fakes.py`'s `ScriptedSerial`/`CannedSerial`, just for HTTP.
+
+   Wired into `kamxl_daemon.py` (`winlink.account_exists`,
+   `winlink.gateway_status`, `winlink.nearby_gateways` -- none of
+   which touch `self.kam`/`_kam_lock`, since there's no serial port
+   involved and holding that lock for an HTTPS round-trip would
+   needlessly block ordinary KAM-XL commands) and `kamxl_rest.py`
+   (`GET /winlink/account/<CALLSIGN>`, `GET /winlink/gateways`,
+   `GET /winlink/gateways/nearby`). The API key itself is read fresh
+   from `$WINLINK_API_KEY` on every daemon call -- deliberately no
+   `--winlink-api-key` CLI flag (Dave's explicit choice, over a config
+   file too), so it never has to touch disk or show up in a process
+   listing/shell history.
+
+   312/312 tests passing (30 new: 17 in `tests/test_winlink_api.py`,
+   6 daemon-layer, 7 REST-layer -- all against fakes, no real network
+   calls in the suite).
+
 ---
 
 

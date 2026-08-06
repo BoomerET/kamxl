@@ -14,6 +14,8 @@ import threading
 import time
 import unittest
 
+import winlink_api
+
 from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 
 from kamxl_daemon import KAMDaemon
@@ -604,6 +606,142 @@ class WinlinkSendMessageTests(DaemonTestCase):
         response = client.call(
             "winlink.send_message", gateway="AI6K-10", password="FOOBAR"
         )
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["type"], "MissingParam")
+
+
+class WinlinkApiTests(DaemonTestCase):
+    """
+    The Winlink HTTP web-service API wiring (account lookups, gateway
+    listings -- winlink_api.py, unrelated to the B2F/RF winlink.py
+    tests above). These never touch daemon.kam at all -- kamxl_daemon.py
+    calls winlink_api.account_exists()/get_gateway_status() directly,
+    with no serial port involved -- so the real network calls are
+    swapped out here for direct module-level fakes (kamxl_daemon.py
+    does `import winlink_api` rather than `from winlink_api import
+    ...`, specifically so reassigning an attribute on the module
+    object here is visible to it), the same "swap the real thing for
+    a fake at the seam" discipline as daemon.kam.send_winlink_message
+    above, just one level further out.
+    """
+
+    def setUp(self):
+        self._old_key = os.environ.get("WINLINK_API_KEY")
+        os.environ["WINLINK_API_KEY"] = "TEST_KEY"
+        self.addCleanup(self._restore_key)
+
+    def _restore_key(self):
+        if self._old_key is None:
+            os.environ.pop("WINLINK_API_KEY", None)
+        else:
+            os.environ["WINLINK_API_KEY"] = self._old_key
+
+    def _patch(self, name, fake):
+        original = getattr(winlink_api, name)
+        setattr(winlink_api, name, fake)
+        self.addCleanup(setattr, winlink_api, name, original)
+
+    def test_account_exists_passes_callsign_and_key(self):
+        calls = []
+
+        self._patch(
+            "account_exists",
+            lambda callsign, api_key, **kwargs: calls.append(
+                (callsign, api_key)
+            ) or True
+        )
+
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.account_exists", callsign="AI6K")
+
+        self.assertTrue(response["ok"])
+        self.assertTrue(response["result"])
+        self.assertEqual(calls, [("AI6K", "TEST_KEY")])
+
+    def test_account_exists_missing_callsign_is_missing_param(self):
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.account_exists")
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["type"], "MissingParam")
+
+    def test_missing_api_key_raises_clear_error(self):
+        os.environ.pop("WINLINK_API_KEY", None)
+
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.account_exists", callsign="AI6K")
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"]["type"], "KAMError")
+        self.assertIn("WINLINK_API_KEY", response["error"]["message"])
+
+    def test_gateway_status_returns_dicts(self):
+        gateway = winlink_api.Gateway(
+            callsign="KD5EOC-10", base_callsign="KD5EOC",
+            requested_mode="Packet", comments="", last_status="",
+            latitude=33.2, longitude=-97.1,
+            channels=[
+                winlink_api.GatewayChannel(
+                    operating_hours="24/7", supported_modes="PACKET",
+                    frequency=145.09, service_code="PUBLIC", baud="1200",
+                    radio_range="25", mode=1, gridsquare="EM13ov",
+                    antenna="Vertical",
+                ),
+            ],
+        )
+        self._patch(
+            "get_gateway_status", lambda api_key, **kwargs: [gateway]
+        )
+
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.gateway_status")
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(len(response["result"]), 1)
+        self.assertEqual(response["result"][0]["callsign"], "KD5EOC-10")
+        self.assertEqual(len(response["result"][0]["channels"]), 1)
+        self.assertEqual(
+            response["result"][0]["channels"][0]["gridsquare"], "EM13ov"
+        )
+
+    def test_nearby_gateways_returns_distance_km(self):
+        near = winlink_api.Gateway(
+            callsign="NEAR-10", base_callsign="NEAR",
+            requested_mode="Packet", comments="", last_status="",
+            latitude=33.05, longitude=-97.05, channels=[],
+        )
+        self._patch(
+            "get_gateway_status", lambda api_key, **kwargs: [near]
+        )
+
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call(
+            "winlink.nearby_gateways", latitude=33.0, longitude=-97.0
+        )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(len(response["result"]), 1)
+        self.assertEqual(response["result"][0]["gateway"]["callsign"], "NEAR-10")
+        self.assertGreater(response["result"][0]["distance_km"], 0)
+
+    def test_nearby_gateways_missing_latitude_is_missing_param(self):
+        self._patch("get_gateway_status", lambda api_key, **kwargs: [])
+
+        _, socket_path = self.start_daemon(ScriptedSerial({}))
+        client = self.connect(socket_path)
+
+        response = client.call("winlink.nearby_gateways", longitude=-97.0)
 
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["type"], "MissingParam")

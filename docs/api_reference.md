@@ -587,4 +587,53 @@ cross-checked against)*
 | `compress(data)` / `decompress(data)` | Plain LZHUF compress/decompress: `[4-byte little-endian length][compressed bytes]`, no checksum. |
 | `compress_b2(data)` / `decompress_b2(data)` | The wire format Winlink actually uses: `[2-byte CRC-16][4-byte length][compressed bytes]`. `decompress_b2()` raises `ChecksumError` on a mismatch. |
 | `LZHUFError` | Base exception (data too short to contain its length/CRC header). |
+
+## `winlink_api` (Winlink HTTP web-service API)
+
+*(new module, August 2026 -- unrelated to `winlink.py`'s B2F/RF
+protocol code above: this talks HTTPS/JSON directly to
+`api.winlink.org`, no serial port or AX.25 session involved anywhere.
+Requires an API key issued by the Winlink Development Team -- see the
+module's own docstring for the full research basis and
+`docs/daemon.md` for how the daemon reads it. **Endpoint/format
+details were cross-checked against Pat, a real open-source Winlink
+client, since the WDT's own docs page is JavaScript-rendered and
+couldn't be fetched directly -- treat as correct-per-a-trusted-
+reference, not yet confirmed against the live API with a real key.**
+The "nearby gateways" computation specifically is client-side geometry
+this project built, not a verified Winlink API operation -- see below.)*
+
+```python
+@dataclass(frozen=True)
+class GatewayChannel:
+    operating_hours: str
+    supported_modes: str
+    frequency: float
+    service_code: str
+    baud: str
+    radio_range: str
+    mode: int
+    gridsquare: str
+    antenna: str
+
+
+@dataclass(frozen=True)
+class Gateway:
+    callsign: str
+    base_callsign: str
+    requested_mode: str
+    comments: str
+    last_status: str
+    latitude: float
+    longitude: float
+    channels: List[GatewayChannel] = field(default_factory=list)
+```
+
+| Function | Description |
+| --- | --- |
+| `account_exists(callsign, api_key, timeout=15, transport=...)` | True if `callsign` has an active Winlink account (`GET /account/exists`). Raises `WinlinkAPIError` on a populated `ResponseStatus` (real API error) or a non-2xx/malformed response. |
+| `get_gateway_status(api_key, mode="AnyAll", history_hours=48, service_codes=("PUBLIC",), timeout=15, transport=...)` | Fetch the current gateway/channel listing (`POST /gateway/status.json`) -- covers both the GatewayListing and GatewayChannelReport permissions, since the WDT doesn't split them across separate endpoints. `history_hours` is clamped to the API's own 48-hour maximum. Returns a list of `Gateway`. |
+| `nearby_gateways(gateways, latitude, longitude, max_distance_km=None, limit=None)` | Sort `Gateway` objects (from `get_gateway_status()`) by great-circle distance from a point, nearest first -- **not a Winlink API call**, plain client-side haversine geometry over the lat/long `get_gateway_status()` already returns. See the module docstring's "NOT CONFIRMED" note on why this wasn't built as a call to a separate "GatewayProximity" endpoint. Excludes gateways with `(0, 0)` (unset) coordinates. Returns `(Gateway, distance_km)` pairs. |
+| `WinlinkAPIError` | Raised on any failed call -- network failure, non-2xx status, malformed JSON, or a real API-reported error. |
+| `Transport` | The injectable `(method, url, data, headers, timeout) -> (status, body)` callable every function above accepts, so tests (and any alternate HTTP stack) can swap out the real network call -- defaults to a plain `urllib.request`-based implementation, no new dependency. |
 | `ChecksumError(LZHUFError)` | The B2 CRC-16 header didn't match the compressed data. |
