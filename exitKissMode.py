@@ -25,7 +25,7 @@ import time
 
 import serial
 
-PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/ttyUSB0"
+PORT = sys.argv[1] if len(sys.argv) > 1 else "/dev/kamxl"
 BAUDRATE = 19200
 
 KISS_EXIT = bytes([0xC0, 0xFF, 0xC0])
