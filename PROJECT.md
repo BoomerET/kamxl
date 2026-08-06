@@ -1045,6 +1045,47 @@ foundation -- Milestone 1 here. Direction as of now:
    318/318 tests passing (6 new, `tests/test_daemon.py`'s
    `LoadDotenvTests`).
 
+   ### Update: enterKissMode.py, to test against Pat directly
+
+   With the B2F client-identity question still open on Winlink's end,
+   Dave wants to try Pat (https://github.com/la5nta/pat -- the same
+   real client `winlink_api.py`'s own research was cross-checked
+   against) directly against the KAM-XL, which means putting it into
+   KISS interface mode first. `exitKissMode.py` (an existing
+   standalone recovery script, milestone 3) only goes one direction --
+   Dave asked for the inverse.
+
+   Per the manual's "KISS Mode" section (checked directly rather than
+   guessed at, same discipline as everything else in this project):
+   "type INTFACE KISS and press return. Then, send a RESET command, or
+   cycle power (off/on)." New `enterKissMode.py`, at the repo root
+   alongside `exitKissMode.py`, does exactly that -- but the two
+   commands are handled two different ways. "INTFACE KISS" goes through
+   `KAMXL.send_command()` as normal (the unit is still in ordinary
+   Terminal Mode at that point, so this gets EH?-detection for free).
+   "RESET" is sent as a raw write to `kam.serial` instead and read back
+   raw, mirroring `exitKissMode.py`'s own reasoning for going around
+   `kamxl.py`'s Terminal Mode machinery: once RESET applies the new
+   INTFACE setting, the KAM-XL should stop producing a `cmd:` prompt
+   entirely (now in KISS framing, not the command loop), and
+   `send_command()`'s own timeout path discards whatever partial text
+   it read rather than surfacing it -- exactly the sign-on-banner text
+   this script wants to show as visual confirmation the switch worked.
+
+   Same persistent-setting caveat as `exitKissMode.py`'s own follow-up
+   text raises for the opposite direction: `INTFACE` is a saved
+   parameter, so the KAM-XL keeps booting straight into KISS mode on
+   every future power-cycle too, not just for one Pat session, until
+   it's explicitly set back to `TERMINAL` (`exitKissMode.py`, then
+   `INTFACE TERMINAL` + `RESET`) -- spelled out in the new script's own
+   module docstring.
+
+   Not yet run against real hardware or an actual Pat session as of
+   this writing -- built directly from the manual's own instructions
+   for the command sequence, same "verify against something authoritative,
+   flag what's still unconfirmed" posture as every other real-hardware
+   script in this project.
+
 ---
 
 
