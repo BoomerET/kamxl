@@ -78,6 +78,13 @@ support, just `KEY=VALUE`/blank lines/`#` comments. See
 `_load_dotenv()`'s own docstring in `kamxl_daemon.py` for the exact
 parsing rules.
 
+**To confirm a key actually works** without starting the daemon or
+REST server at all: `python3 examples/winlink_api_check.py [CALLSIGN]`
+-- makes exactly one cheap `account_exists()` call (same "query
+sparingly" discipline as the WDT itself asked for) and reports whether
+the key, network path, and parsing are all working end-to-end. See
+[examples/README.md](../examples/README.md) for more.
+
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.
 
