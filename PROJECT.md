@@ -873,6 +873,75 @@ foundation -- Milestone 1 here. Direction as of now:
    still "matches two independent descriptions of the protocol," not
    "confirmed against a real gateway in the field."
 
+   ### Update: command responses corrupted by embedded MONITOR traffic (confirmed live)
+
+   While still waiting on the `kamxl_winlink` registration, Dave hit a
+   real bug through the web terminal: typing `VERSION` came back as a
+   `KAMCommandError` whose message was three unrelated MONITOR packets
+   glued onto the KAM-XL's own reply --
+
+   ```
+   KD5EOC-10>BEACON/2: <UI>:
+   Winlink 2000 RMS Packet Server
+
+   KC5GOI-1>ID/2: <UI>:
+   KC5GOI-1/R RSSTN/D KC5GOI-7/N
+
+   KC5GOI-1>BEACON/2: <UI>:
+   Rosston Digi KC5GOI-1, Alias RSSTN. SW Cooke Co, Texas.
+
+       $
+   EH?
+   ```
+
+   Retrying the identical command immediately afterward succeeded,
+   confirming this was transient RF traffic arriving mid-command, not
+   a lasting fault. This is exactly the scenario `docs/daemon.md`'s
+   "Known limitation" section had predicted since milestone 7 but
+   marked "not yet hit in testing" -- unsolicited MONITOR traffic and
+   a command's response share one physical serial stream on real
+   hardware, and `kamxl_daemon.py`'s lock fully excludes the
+   background monitor-polling thread for a command's entire duration,
+   so any packet arriving in that window gets absorbed straight into
+   the command's own read buffer instead of being handled separately.
+   Confirmed by reading `send_command()`/`_read_until_prompt()`,
+   `_monitor_loop()`'s locking, and `packet.py`'s `HEADER_RE` together
+   -- not guessed at.
+
+   A second, more consequential finding came out of that same reading:
+   because the monitor thread is locked out for the command's whole
+   duration, real APRS/station data arriving during that window isn't
+   just cosmetically jumbled into the response -- it's permanently lost
+   from `stations.py`'s `StationTracker`, never parsed as a packet at
+   all. Asked Dave directly how far the fix should go: filter the noise
+   out of command responses only, or also recover that traffic into
+   `StationTracker` so it isn't lost. Dave chose the simpler **filter
+   only** -- the `StationTracker` data-loss aspect remains a known,
+   deliberately unaddressed gap.
+
+   Implemented `KAMXL._strip_monitor_lines()`, wired into
+   `send_command()` right after decoding the raw response and before
+   the echo/`EH?` checks: recognizes each embedded MONITOR packet by
+   its header line (the same `HEADER_RE` the monitor thread itself
+   uses) and removes the header plus everything up to the next blank
+   line, leaving only genuine command-response text behind. Known
+   tradeoff, documented and pinned down with a dedicated test
+   (`StripMonitorLinesTests.test_monitor_block_with_no_trailing_blank_line_consumes_to_end`):
+   if a monitored packet's payload has no trailing blank line before
+   real response text, that response text is swallowed too, since
+   there's no other signal to tell them apart.
+
+   Regression-tested against Dave's exact captured bytes via a new
+   `CannedSerial`-based test in `tests/test_typed_commands.py`
+   (`RawCommandTests.test_embedded_monitor_traffic_stripped_from_response`),
+   plus a dedicated `StripMonitorLinesTests` class covering the
+   no-monitor-traffic case, single- and multi-block removal, and the
+   swallowed-response edge case above. `docs/daemon.md`'s "Known
+   limitation" section and `docs/api_reference.md`'s `send_command()`
+   entry updated to describe the mitigation and its remaining scope.
+
+   282/282 tests passing.
+
 ---
 
 

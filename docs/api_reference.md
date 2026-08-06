@@ -25,7 +25,7 @@ KAMXL(port: str, baudrate: int = 19200, timeout: float = 0.25)
 
 | Method | Description |
 | --- | --- |
-| `send_command(command, command_timeout=10)` | Send a Terminal Mode command, wait for `cmd:`, return the response text (echo and prompt stripped). Raises `KAMCommandError` on `EH?`. |
+| `send_command(command, command_timeout=10)` | Send a Terminal Mode command, wait for `cmd:`, return the response text (echo and prompt stripped). Any MONITOR traffic from other stations that arrives interleaved with the response is filtered out first (see `docs/daemon.md`'s "Known limitation" section). Raises `KAMCommandError` on `EH?`. |
 | `get(command)` | Query a parameter, return its raw string value. |
 | `set(command, value)` | Set a parameter to a raw value. |
 

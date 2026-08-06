@@ -179,9 +179,34 @@ sending a command and its response finishing, no amount of
 client-side locking prevents it from showing up interleaved with (or
 folded into) that response -- this is a pre-existing characteristic of
 `kamxl.py`'s Terminal Mode handling, not something introduced by the
-daemon. Not yet hit in testing; noted here per this project's
-practice of writing down real constraints rather than assuming a
-locking scheme has fully solved them.
+daemon.
+
+**Confirmed live**, milestone 9: typing `VERSION` through the web
+terminal returned a `KAMCommandError` whose message was three
+unrelated MONITOR packets (a Winlink gateway beacon and a digipeater
+ID/beacon) glued in front of the KAM-XL's actual `EH?` reply. Retrying
+the same command immediately afterward succeeded -- confirming this
+was transient RF traffic arriving mid-command, not a lasting problem
+with the command itself. `kamxl.py`'s `send_command()` now calls a new
+`_strip_monitor_lines()` helper that recognizes and removes embedded
+MONITOR packet headers/payloads (using the same `HEADER_RE` the
+monitor thread itself uses) before the response is otherwise touched,
+so a stray packet no longer corrupts the command's own response text.
+
+This is a mitigation, not a fix for the underlying constraint: the
+shared-serial-stream characteristic described above is still true, and
+`_strip_monitor_lines()`'s block-boundary heuristic (a monitor block
+ends at the next blank line) has a known edge case -- if a monitored
+packet's payload has no trailing blank line before genuine response
+text, that response text is swallowed too (see
+`StripMonitorLinesTests.test_monitor_block_with_no_trailing_blank_line_consumes_to_end`
+in `tests/test_typed_commands.py`). More consequentially, MONITOR
+traffic that arrives during a command's execution is still **not**
+recovered into `stations.py`'s `StationTracker` -- it's discarded, not
+redirected, since the monitor thread is fully locked out for the
+command's duration (see "Concurrency model" above). Recovering that
+data was considered and deliberately deferred for this round in favor
+of the simpler filter-only fix.
 
 Milestone 7's always-on monitor thread makes this limitation more
 likely to actually surface in practice than it was through milestone
@@ -191,8 +216,6 @@ commands. It doesn't introduce any *new* risk beyond what's described
 above (the lock still fully serializes each individual command against
 the polling thread), just more opportunities for real MONITOR traffic
 to legitimately be waiting in the gap right before a command starts.
-Worth watching for if PBBS/connect responses ever look corrupted or
-interleaved with unrelated MONITOR text on real hardware.
 
 ## Testing
 

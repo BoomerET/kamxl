@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 
 import lzhuf
 
-from packet import Packet, PacketParser
+from packet import HEADER_RE, Packet, PacketParser
 from pbbs import PBBSMessage, PBBSMessageSummary, parse_message, parse_message_list
 from winlink import (
     B2Proposal,
@@ -467,6 +467,82 @@ class KAMXL:
     # Terminal command handling
     # -----------------------------------------------------------------------
 
+    def _strip_monitor_lines(self, text: str) -> str:
+        """
+        Remove any KAM-XL MONITOR-format lines embedded in a command's
+        response text.
+
+        Real bug found live (Dave's daemon log, a plain "VERSION"
+        command sent through kamxl_daemon.py/kamxl_rest.py's web
+        terminal): unsolicited MONITOR traffic and a command's response
+        share one physical serial stream on real hardware (see
+        docs/daemon.md's "Known limitation" -- previously flagged as
+        "not yet hit in testing," now confirmed live). When a packet
+        from another station arrives in the gap between sending a
+        command and its response completing, it gets read in as if it
+        were part of that response -- no client-side locking can
+        prevent it, since it's the KAM-XL's own firmware interleaving
+        them on the wire. Observed: three genuine monitored packets
+        (from KD5EOC-10 and KC5GOI-1) landed ahead of the KAM-XL's own
+        real reply to "VERSION", which came back as "EH?" -- the
+        KAM-XL's own command parser apparently choked while busy
+        emitting all that monitor traffic. A bare retry immediately
+        succeeded, confirming this was transient interference from
+        real RF traffic, not a lasting problem with the command itself.
+
+        Recognizes a monitored packet the same way packet.py's
+        PacketParser does (HEADER_RE), but with a narrower, more
+        conservative rule for where each one ends: a header line,
+        everything up to and including the next blank line (or the
+        next header line, or the end of text if neither ever appears).
+        This matches the blank-line-separated shape seen in the real
+        capture above, and is deliberately simpler than PacketParser's
+        own "a packet ends only when the next header line arrives"
+        rule -- that rule would have swallowed the real capture's own
+        "EH?" tail too, since nothing after it looked like another
+        header. Good enough to clean up a command's response; not
+        meant to replace PacketParser for genuine monitor decoding
+        (which still runs separately, in kamxl_daemon.py's background
+        thread, whenever it isn't locked out by an in-flight command).
+
+        Known limitation of this heuristic: a monitored packet with no
+        blank line after it (rare in what's been observed so far, but
+        not something the KAM-XL is documented to guarantee) would
+        swallow whatever genuine response text follows it too, same as
+        packet.py's HEADER_RE itself needed a real-hardware correction
+        after its first live test -- expect the same kind of scrutiny
+        here if a case like that ever turns up.
+
+        This does NOT recover the lost monitor data for stations.py's
+        passive station database -- see docs/daemon.md's "Known
+        limitation" for why that's a separate, harder problem left
+        alone for now (a deliberate scope choice, not an oversight).
+        This only stops embedded MONITOR noise from corrupting what
+        send_command() returns or raises.
+        """
+        lines = text.splitlines()
+        kept: List[str] = []
+        index = 0
+
+        while index < len(lines):
+            line = lines[index]
+
+            if HEADER_RE.match(line.strip()):
+                index += 1
+
+                while index < len(lines) and lines[index].strip():
+                    index += 1
+
+                if index < len(lines):
+                    index += 1  # consume the trailing blank line too
+
+                continue
+
+            kept.append(line)
+            index += 1
+
+        return "\r\n".join(kept)
+
     def _remove_command_echo(self, text: str, command: str) -> str:
         """
         Remove the first line if it is simply the KAM echoing the command.
@@ -519,6 +595,23 @@ class KAMXL:
         )
 
         text = text.strip("\r\n")
+
+        # Strip any embedded MONITOR traffic (a real packet from
+        # another station, arriving in the gap between this command
+        # and its response -- see _strip_monitor_lines()'s docstring)
+        # before anything else touches the text -- both the echo
+        # check below (which only looks at the first line) and the
+        # EH? check depend on this happening first.
+        filtered = self._strip_monitor_lines(text)
+
+        if filtered != text:
+            logger.debug(
+                "send_command(%r): removed embedded MONITOR traffic "
+                "from response: %r -> %r",
+                command, text, filtered
+            )
+
+        text = filtered
 
         # Account for ECHO ON.
         text = self._remove_command_echo(
