@@ -26,6 +26,18 @@ CALLSIGN defaults to "AI6K" if not given.
 
 import os
 import sys
+from pathlib import Path
+
+# kamxl_daemon.py and winlink_api.py (repo root) need to be importable
+# even when this script is run directly (not via `pip install -e .`)
+# -- same reasoning, same fix, as offline_typed_commands.py's own
+# sys.path bootstrap. Without this, running `python
+# examples/winlink_api_check.py` puts only examples/ itself on
+# sys.path, not the repo root one level up -- a real gap found the
+# first time this was actually run outside this project's own sandbox
+# (which had PYTHONPATH set already, masking it).
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 from kamxl_daemon import _load_dotenv
 from winlink_api import WinlinkAPIError, account_exists
