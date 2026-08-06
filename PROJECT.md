@@ -1019,6 +1019,32 @@ foundation -- Milestone 1 here. Direction as of now:
    6 daemon-layer, 7 REST-layer -- all against fakes, no real network
    calls in the suite).
 
+   ### Update: optional .env file for WINLINK_API_KEY
+
+   Dave set `WINLINK_API_KEY` for real and confirmed the "Unknown
+   client types are not allowed on production servers" disconnect is
+   unrelated to this key entirely -- it's a still-unresolved B2F/telnet
+   client-identity whitelist issue, separate from the web-service API
+   token (see `winlink.py`'s "KNOWN DISCONNECT REASONS" #2). Along the
+   way, re-exporting the key by hand before every daemon start got
+   old, so he created a (gitignored) `.env` file and asked for it to
+   be read automatically instead.
+
+   `kamxl_daemon.py` gained a minimal `_load_dotenv()`, called first
+   thing in `main()`: reads `KEY=VALUE` lines from `.env` in the
+   current directory (blank lines/`#` comments skipped, quoted values
+   unquoted), filling in only whatever isn't already a real
+   environment variable -- a real `export WINLINK_API_KEY=...` still
+   always wins, same precedence any dotenv tool uses. No third-party
+   dependency (same stdlib-only choice as `winlink_api.py`'s `urllib`
+   and `kamxl_rest.py`'s `http.server`) -- this doesn't replace the
+   env-var-only design from the "Key storage" decision above, just
+   adds a convenience on top of it. Silently does nothing if `.env`
+   doesn't exist, so nothing changes for anyone not using one.
+
+   318/318 tests passing (6 new, `tests/test_daemon.py`'s
+   `LoadDotenvTests`).
+
 ---
 
 

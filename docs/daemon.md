@@ -58,6 +58,26 @@ export WINLINK_API_KEY=...
 python3 kamxl_daemon.py --port COM8 --socket /tmp/kamxl.sock
 ```
 
+**Or, a `.env` file** (added after the above, once re-exporting the
+key by hand every startup got old): `main()` calls a minimal built-in
+`_load_dotenv()` before anything else, which reads `KEY=VALUE` lines
+out of a `.env` file in the current directory, if one exists, and
+fills in whatever isn't already a real environment variable --
+
+```
+# .env (gitignored -- confirm it's actually in your .gitignore before
+# creating this; the repo's own .gitignore already lists it)
+WINLINK_API_KEY=your-key-here
+```
+
+A real exported `WINLINK_API_KEY` always wins over the file (standard
+dotenv precedence), so this is purely a convenience layered on top of
+the env-var design above, not a replacement for it -- no third-party
+`python-dotenv` dependency, no interpolation or line-continuation
+support, just `KEY=VALUE`/blank lines/`#` comments. See
+`_load_dotenv()`'s own docstring in `kamxl_daemon.py` for the exact
+parsing rules.
+
 Runs in the foreground; `Ctrl-C` (or `SIGTERM`) closes the KAM-XL
 connection, removes the socket file, and exits cleanly.
 

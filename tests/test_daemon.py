@@ -18,7 +18,7 @@ import winlink_api
 
 from fakes import CannedSerial, ChunkSerial, ScriptedSerial, make_kam
 
-from kamxl_daemon import KAMDaemon
+from kamxl_daemon import KAMDaemon, _load_dotenv
 from pbbs import PBBSMessage, PBBSMessageSummary
 from winlink import OutgoingMessage, Proposal, WinlinkMessage
 
@@ -745,6 +745,75 @@ class WinlinkApiTests(DaemonTestCase):
 
         self.assertFalse(response["ok"])
         self.assertEqual(response["error"]["type"], "MissingParam")
+
+
+class LoadDotenvTests(unittest.TestCase):
+    """
+    kamxl_daemon.py's minimal .env loader -- reads WINLINK_API_KEY (or
+    anything else) out of a KEY=VALUE file so it doesn't have to be
+    exported by hand every time the daemon starts. See _load_dotenv()'s
+    own docstring for the full scope (no third-party dotenv dependency,
+    no interpolation/line-continuation support).
+    """
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._env_path = os.path.join(self._tmp_dir, ".env")
+
+        self._saved_environ = dict(os.environ)
+        self.addCleanup(self._restore_environ)
+
+    def _restore_environ(self):
+        os.environ.clear()
+        os.environ.update(self._saved_environ)
+
+    def _write_env(self, content):
+        with open(self._env_path, "w") as f:
+            f.write(content)
+
+    def test_missing_file_is_a_no_op(self):
+        # Must not raise -- a .env file is a convenience, not a
+        # requirement, and the daemon has to keep working without one.
+        _load_dotenv(os.path.join(self._tmp_dir, "does-not-exist.env"))
+
+    def test_sets_previously_unset_variable(self):
+        os.environ.pop("WINLINK_API_KEY", None)
+        self._write_env("WINLINK_API_KEY=ABC123\n")
+
+        _load_dotenv(self._env_path)
+
+        self.assertEqual(os.environ["WINLINK_API_KEY"], "ABC123")
+
+    def test_real_environment_variable_takes_precedence(self):
+        # Standard dotenv semantics -- the file only fills in gaps, it
+        # never overrides something already exported for real.
+        os.environ["WINLINK_API_KEY"] = "REAL_VALUE"
+        self._write_env("WINLINK_API_KEY=FROM_DOTENV\n")
+
+        _load_dotenv(self._env_path)
+
+        self.assertEqual(os.environ["WINLINK_API_KEY"], "REAL_VALUE")
+
+    def test_blank_lines_and_comments_skipped(self):
+        self._write_env("\n# a comment\nFOO_TEST_VAR=bar\n")
+
+        _load_dotenv(self._env_path)
+
+        self.assertEqual(os.environ["FOO_TEST_VAR"], "bar")
+
+    def test_quoted_value_is_unquoted(self):
+        self._write_env('FOO_TEST_VAR="bar baz"\n')
+
+        _load_dotenv(self._env_path)
+
+        self.assertEqual(os.environ["FOO_TEST_VAR"], "bar baz")
+
+    def test_line_without_equals_sign_skipped(self):
+        self._write_env("not a valid line\nFOO_TEST_VAR=bar\n")
+
+        _load_dotenv(self._env_path)
+
+        self.assertEqual(os.environ["FOO_TEST_VAR"], "bar")
 
 
 class MonitorSubscribeTests(DaemonTestCase):

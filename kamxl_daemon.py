@@ -678,7 +678,61 @@ class DaemonRequestHandler(socketserver.StreamRequestHandler):
                 pass
 
 
+def _load_dotenv(path: str = ".env") -> None:
+    """
+    Populate os.environ from a simple KEY=VALUE .env file, if present
+    -- e.g. WINLINK_API_KEY, so it doesn't have to be `export`ed by
+    hand every time the daemon starts. A real environment variable
+    that's already set always wins (standard dotenv behavior -- the
+    file only fills in whatever isn't already set, it never
+    overrides), so this is purely a convenience on top of the
+    env-var-only design (see _require_winlink_api_key()'s docstring
+    for why that was chosen over a CLI flag) -- not a config file the
+    daemon depends on.
+
+    Deliberately minimal, no third-party dotenv dependency (same
+    stdlib-only choice kamxl_rest.py made for http.server and
+    winlink_api.py made for urllib): blank lines and lines starting
+    with "#" are skipped, "KEY=VALUE" is split on the first "=", and a
+    value wrapped in matching single/double quotes has them stripped.
+    No line continuation, no variable interpolation, no "export "
+    prefix handling -- add it if a real need for any of that shows up.
+
+    Silently does nothing if ``path`` doesn't exist -- this is a
+    convenience, not a requirement; the daemon must keep working with
+    real environment variables and no .env file at all, exactly as it
+    did before this existed.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+    except FileNotFoundError:
+        return
+
+    for raw_line in lines:
+        line = raw_line.strip()
+
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def main(argv: Optional[list] = None) -> None:
+    # Before anything else -- including building the argument parser
+    # below, whose --port/--socket/--baud defaults themselves read
+    # os.environ -- so a .env-supplied value is indistinguishable from
+    # a real exported one by the time either of those look for it.
+    _load_dotenv()
+
     parser = argparse.ArgumentParser(
         description="KAM-XL background daemon"
     )
