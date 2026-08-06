@@ -11,3 +11,5 @@ dist/
 # reference during development.
 KAM-XL-Manual-RevE.pdf
 manual.txt
+.env
+
